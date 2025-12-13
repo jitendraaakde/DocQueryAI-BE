@@ -19,7 +19,7 @@ from app.services.document_service import DocumentService
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
-@router.post("/", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
@@ -40,7 +40,7 @@ async def upload_document(
     return document
 
 
-@router.get("/", response_model=DocumentListResponse)
+@router.get("", response_model=DocumentListResponse)
 async def list_documents(
     page: int = 1,
     page_size: int = 10,
