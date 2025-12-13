@@ -11,18 +11,16 @@ from app.api.router import api_router
 from app.services.weaviate_service import weaviate_service
 
 # Configure logging
-# logging.basicConfig(
-#     level=logging.DEBUG if settings.DEBUG else logging.INFO,
-#     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-# )
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # Reduce verbose logging from third-party libraries
-# logging.getLogger("httpx").setLevel(logging.WARNING)
-# logging.getLogger("httpcore").setLevel(logging.WARNING)
-# logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-# logging.getLogger("urllib3").setLevel(logging.WARNING)
-# logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 @asynccontextmanager

@@ -171,44 +171,96 @@ class WeaviateService:
         document_name: str
     ) -> List[str]:
         """Add document chunks to Weaviate with embeddings from Jina API."""
+        logger.info(f"=== ADD_CHUNKS START ===")
+        logger.info(f"Document ID: {document_id}, User ID: {user_id}, Document Name: {document_name}")
+        logger.info(f"Number of chunks to add: {len(chunks)}")
+        
         if not self._connected:
+            logger.info("Not connected to Weaviate, connecting now...")
             await self.connect()
         
+        logger.info(f"Getting collection: {self.COLLECTION_NAME}")
         collection = self.client.collections.get(self.COLLECTION_NAME)
+        logger.info(f"Collection obtained: {collection}")
         weaviate_ids = []
         
         try:
             # Generate embeddings for all chunks using Jina API
+            logger.info("Getting embedding service...")
             from app.services.embedding_service import get_embedding_service
             embedding_service = get_embedding_service()
             
             chunk_texts = [chunk["content"] for chunk in chunks]
-            embeddings = await embedding_service.get_embeddings(chunk_texts)
+            logger.info(f"Chunk texts extracted. First chunk preview: {chunk_texts[0][:100] if chunk_texts else 'N/A'}...")
             
-            with collection.batch.dynamic() as batch:
-                for i, chunk in enumerate(chunks):
-                    properties = {
-                        "content": chunk["content"],
-                        "document_id": document_id,
-                        "user_id": user_id,
-                        "chunk_index": chunk.get("chunk_index", i),
-                        "document_name": document_name,
-                        "page_number": chunk.get("page_number", 0)
-                    }
-                    
-                    # Include the embedding vector
-                    uuid = batch.add_object(
+            logger.info("Generating embeddings via Jina API...")
+            embeddings = await embedding_service.get_embeddings(chunk_texts)
+            logger.info(f"Embeddings generated. Count: {len(embeddings)}, First embedding dimension: {len(embeddings[0]) if embeddings else 'N/A'}")
+            
+            # Use HTTP REST-based insertion instead of gRPC batch (Render doesn't support gRPC)
+            logger.info("Starting HTTP REST-based insert (one by one)...")
+            
+            for i, chunk in enumerate(chunks):
+                properties = {
+                    "content": chunk["content"],
+                    "document_id": document_id,
+                    "user_id": user_id,
+                    "chunk_index": chunk.get("chunk_index", i),
+                    "document_name": document_name,
+                    "page_number": chunk.get("page_number", 0)
+                }
+                
+                logger.info(f"Inserting chunk {i+1}/{len(chunks)}...")
+                
+                try:
+                    # Use data.insert() which uses HTTP REST API
+                    uuid = collection.data.insert(
                         properties=properties,
                         vector=embeddings[i]
                     )
+                    logger.info(f"Chunk {i+1} inserted successfully with UUID: {uuid}")
                     weaviate_ids.append(str(uuid))
+                except Exception as chunk_error:
+                    logger.error(f"Failed to insert chunk {i+1}: {chunk_error}")
+                    raise
             
+            logger.info(f"=== ADD_CHUNKS SUCCESS ===")
             logger.info(f"Added {len(chunks)} chunks with embeddings for document {document_id}")
+            logger.info(f"Weaviate IDs returned: {weaviate_ids}")
             return weaviate_ids
             
         except Exception as e:
+            logger.error(f"=== ADD_CHUNKS FAILED ===")
             logger.error(f"Failed to add chunks to Weaviate: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
+    
+    # GraphQL enum values that should not be quoted
+    GRAPHQL_ENUMS = {"And", "Or", "Equal", "NotEqual", "GreaterThan", "GreaterThanEqual", 
+                     "LessThan", "LessThanEqual", "Like", "WithinGeoRange", "IsNull", "ContainsAny", "ContainsAll"}
+    
+    def _to_graphql(self, obj: Any, key: str = None) -> str:
+        """Convert Python object to GraphQL format (unquoted keys, enum values)."""
+        import json
+        if isinstance(obj, dict):
+            items = []
+            for k, value in obj.items():
+                items.append(f"{k}: {self._to_graphql(value, k)}")
+            return "{" + ", ".join(items) + "}"
+        elif isinstance(obj, list):
+            return "[" + ", ".join(self._to_graphql(item, key) for item in obj) + "]"
+        elif isinstance(obj, str):
+            # Check if this is an enum value (for 'operator' field)
+            if key == "operator" and obj in self.GRAPHQL_ENUMS:
+                return obj  # Don't quote enum values
+            return json.dumps(obj)  # Properly escape strings
+        elif isinstance(obj, bool):
+            return "true" if obj else "false"
+        elif obj is None:
+            return "null"
+        else:
+            return str(obj)
     
     async def search(
         self,
@@ -217,11 +269,9 @@ class WeaviateService:
         document_ids: Optional[List[int]] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
-        """Search for relevant chunks using vector search with Jina embeddings."""
+        """Search for relevant chunks using vector search with Jina embeddings via HTTP REST API."""
         if not self._connected:
             await self.connect()
-        
-        collection = self.client.collections.get(self.COLLECTION_NAME)
         
         try:
             # Get query embedding from Jina API
@@ -229,39 +279,113 @@ class WeaviateService:
             embedding_service = get_embedding_service()
             query_vector = await embedding_service.get_query_embedding(query)
             
-            # Build filter
-            filters = Filter.by_property("user_id").equal(user_id)
+            logger.info(f"Performing vector search for query: {query[:50]}...")
+            
+            # Build where filter
+            where_filter = {
+                "operator": "And",
+                "operands": [
+                    {
+                        "path": ["user_id"],
+                        "operator": "Equal",
+                        "valueInt": user_id
+                    }
+                ]
+            }
             
             if document_ids:
-                doc_filters = None
-                for doc_id in document_ids:
-                    doc_filter = Filter.by_property("document_id").equal(doc_id)
-                    if doc_filters is None:
-                        doc_filters = doc_filter
-                    else:
-                        doc_filters = doc_filters | doc_filter
-                
-                filters = filters & doc_filters
+                doc_filter = {
+                    "operator": "Or",
+                    "operands": [
+                        {
+                            "path": ["document_id"],
+                            "operator": "Equal",
+                            "valueInt": doc_id
+                        } for doc_id in document_ids
+                    ]
+                }
+                where_filter["operands"].append(doc_filter)
             
-            # Perform vector search with the query embedding
-            response = collection.query.near_vector(
-                near_vector=query_vector,
-                filters=filters,
-                limit=limit,
-                return_metadata=MetadataQuery(distance=True)
-            )
+            # Convert to GraphQL format (unquoted keys)
+            where_graphql = self._to_graphql(where_filter)
+            vector_graphql = str(query_vector)
+            
+            # Build GraphQL query
+            graphql_query = {
+                "query": f"""
+                {{
+                    Get {{
+                        DocQueryChunks(
+                            nearVector: {{
+                                vector: {vector_graphql}
+                            }}
+                            where: {where_graphql}
+                            limit: {limit}
+                        ) {{
+                            content
+                            document_id
+                            user_id
+                            chunk_index
+                            document_name
+                            page_number
+                            _additional {{
+                                id
+                                distance
+                            }}
+                        }}
+                    }}
+                }}
+                """
+            }
+            
+            logger.debug(f"GraphQL query: {graphql_query['query']}")
+            
+            # Make HTTP REST request to Weaviate GraphQL endpoint
+            import httpx
+            from app.core.config import settings
+            
+            # Construct the URL
+            host = settings.WEAVIATE_HOST
+            if host.startswith("https://") or host.startswith("http://"):
+                base_url = host.rstrip("/")
+            else:
+                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
+            
+            headers = {"Content-Type": "application/json"}
+            if settings.WEAVIATE_API_KEY:
+                headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{base_url}/v1/graphql",
+                    json=graphql_query,
+                    headers=headers
+                )
+                response.raise_for_status()
+                data = response.json()
+            
+            logger.info(f"GraphQL response received: {data}")
+            
+            # Check for errors
+            if "errors" in data and data["errors"]:
+                logger.error(f"GraphQL errors: {data['errors']}")
+                return []
             
             results = []
-            for obj in response.objects:
+            chunks = data.get("data", {}).get("Get", {}).get("DocQueryChunks", []) or []
+            
+            for obj in chunks:
+                additional = obj.get("_additional", {})
+                distance = additional.get("distance", 0.0)
                 results.append({
-                    "weaviate_id": str(obj.uuid),
-                    "content": obj.properties.get("content", ""),
-                    "document_id": obj.properties.get("document_id"),
-                    "document_name": obj.properties.get("document_name", ""),
-                    "chunk_index": obj.properties.get("chunk_index", 0),
-                    "page_number": obj.properties.get("page_number", 0),
-                    "score": 1 - obj.metadata.distance if obj.metadata.distance else 0.0,  # Convert distance to similarity
-                    "distance": obj.metadata.distance if obj.metadata.distance else 0.0
+                    "weaviate_id": additional.get("id", ""),
+                    "content": obj.get("content", ""),
+                    "document_id": obj.get("document_id"),
+                    "document_name": obj.get("document_name", ""),
+                    "chunk_index": obj.get("chunk_index", 0),
+                    "page_number": obj.get("page_number", 0),
+                    "score": 1 - distance if distance else 0.0,
+                    "distance": distance
                 })
             
             logger.info(f"Found {len(results)} results for query: {query[:50]}...")
@@ -269,22 +393,56 @@ class WeaviateService:
             
         except Exception as e:
             logger.error(f"Search failed: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     async def delete_document_chunks(self, document_id: int):
-        """Delete all chunks for a document."""
+        """Delete all chunks for a document using HTTP REST API."""
         if not self._connected:
             await self.connect()
         
-        collection = self.client.collections.get(self.COLLECTION_NAME)
-        
         try:
-            collection.data.delete_many(
-                where=Filter.by_property("document_id").equal(document_id)
-            )
-            logger.info(f"Deleted chunks for document {document_id}")
+            import httpx
+            from app.core.config import settings
+            
+            # Construct the URL
+            host = settings.WEAVIATE_HOST
+            if host.startswith("https://") or host.startswith("http://"):
+                base_url = host.rstrip("/")
+            else:
+                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
+            
+            headers = {"Content-Type": "application/json"}
+            if settings.WEAVIATE_API_KEY:
+                headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
+            
+            # Use batch delete via REST API
+            delete_payload = {
+                "match": {
+                    "class": self.COLLECTION_NAME,
+                    "where": {
+                        "path": ["document_id"],
+                        "operator": "Equal",
+                        "valueInt": document_id
+                    }
+                }
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.delete(
+                    f"{base_url}/v1/batch/objects",
+                    json=delete_payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                data = response.json()
+            
+            logger.info(f"Deleted chunks for document {document_id}. Response: {data}")
         except Exception as e:
             logger.error(f"Failed to delete chunks: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     async def health_check(self) -> bool:

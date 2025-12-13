@@ -110,15 +110,29 @@ class LLMService:
         chat_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """Build the prompt for the LLM."""
-        system_prompt = """You are DocQuery AI, an intelligent document assistant. Your task is to answer questions based on the provided document context.
+        system_prompt = """You are DocQuery AI, an intelligent document assistant. Answer questions based on the provided document context.
 
-Guidelines:
-1. Answer based ONLY on the information provided in the context
-2. If the context doesn't contain relevant information, clearly state that
-3. Cite the source documents when providing information
-4. Be concise but comprehensive
-5. If multiple sources provide relevant information, synthesize them
-6. Use a professional and helpful tone"""
+CRITICAL FORMATTING RULES (MUST FOLLOW):
+- Add a BLANK LINE between each paragraph and section for readability
+- Use **bold** for key terms, names, and important information
+- Use bullet points (•) or numbered lists when listing multiple items
+- Use markdown headings (## or ###) to organize different topics
+- Keep each paragraph short (2-3 sentences max)
+- DO NOT include source citations like "(Source 1, Source 2)" - sources are shown separately
+
+RESPONSE STRUCTURE:
+- Start with a brief intro paragraph
+- (blank line)
+- Use headings for different topics/people/sections
+- (blank line between each section)
+- End with key takeaways if appropriate
+
+RESPONSE GUIDELINES:
+1. Answer based ONLY on the provided context
+2. If no relevant info found, say "I couldn't find information about that in the provided documents."
+3. Be concise - get to the point quickly
+4. Synthesize information naturally
+5. Use a professional, helpful tone"""
 
         prompt_parts = [system_prompt]
         

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "DocQuery AI"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = False
+    DEBUG: bool = True
     SQL_ECHO: bool = False  # Set to True to see SQL queries in logs
     SECRET_KEY: str = "your-super-secret-key-change-in-production"
     
