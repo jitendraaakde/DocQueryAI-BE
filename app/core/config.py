@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = "your-email-password"
     FROM_EMAIL: str = "your-email-user"
     
+    # Resend Email API (works on cloud platforms like Railway/Render)
+    RESEND_API_KEY: Optional[str] = None
+    RESEND_FROM_EMAIL: str = "noreply@mail.docqueryai.com"  # Verified Resend domain
+    
+    # Email verification toggle (set to False to skip email verification during registration)
+    EMAIL_VERIFICATION_REQUIRED: bool = False  # Set to True when you have a verified domain
+    
     class Config:
         env_file = "../.env"  # .env is in project root, not backend folder
         case_sensitive = True

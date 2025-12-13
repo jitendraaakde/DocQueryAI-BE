@@ -5,10 +5,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_token
+from app.core.config import settings
 from app.schemas.user import UserCreate, UserLogin, UserResponse, Token
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+@router.get("/config")
+async def get_auth_config():
+    """Get authentication configuration (e.g., whether email verification is required)."""
+    return {
+        "email_verification_required": settings.EMAIL_VERIFICATION_REQUIRED
+    }
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -19,6 +28,12 @@ async def register(
     """Register a new user."""
     user_service = UserService(db)
     user = await user_service.create_user(user_data)
+    
+    # Auto-verify user if email verification is disabled
+    if not settings.EMAIL_VERIFICATION_REQUIRED:
+        user.is_verified = True
+        await db.flush()
+    
     return user
 
 
