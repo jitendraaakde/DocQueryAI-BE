@@ -40,11 +40,13 @@ class WeaviateService:
                 hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
                 # For cloud deployments, use standard ports
                 http_port = parsed.port or (443 if is_secure else 80)
+                # gRPC port must be different from HTTP port for validation
+                # We use 50051 as a dummy port since we skip init checks anyway
+                grpc_port = 50051
                 
                 logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port})")
                 
                 # For Railway deployments, gRPC is not exposed, so we skip init checks
-                # and use HTTP-only communication
                 additional_config = wvc.init.AdditionalConfig(
                     timeout=wvc.init.Timeout(init=30, query=60, insert=120)
                 )
@@ -55,7 +57,7 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname,
-                        grpc_port=http_port,  # Same port, but we skip init checks
+                        grpc_port=grpc_port,
                         grpc_secure=is_secure,
                         auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY),
                         skip_init_checks=True,
@@ -67,7 +69,7 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname, 
-                        grpc_port=http_port,  # Same port, but we skip init checks
+                        grpc_port=grpc_port,
                         grpc_secure=is_secure,
                         skip_init_checks=True,
                         additional_config=additional_config
