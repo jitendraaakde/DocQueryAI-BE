@@ -71,8 +71,13 @@ class Settings(BaseSettings):
     # Jina Embeddings (free tier: 1M tokens/month)
     JINA_API_KEY: Optional[str] = None
     
-    # CORS
-    CORS_ORIGINS: list = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # CORS - comma-separated list of origins
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+    
+    @property
+    def CORS_ORIGINS_LIST(self) -> list:
+        """Parse CORS_ORIGINS string into a list."""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
     # Supabase S3-Compatible Storage
     SUPABASE_S3_ACCESS_KEY: Optional[str] = None
@@ -83,9 +88,9 @@ class Settings(BaseSettings):
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_USER: str = "rahulalatre101@gmail.com"
-    SMTP_PASSWORD: str = "sdolajpezkglmxwf"
-    FROM_EMAIL: str = "rahulalatre101@gmail.com"
+    SMTP_USER: str = "your-email-user"
+    SMTP_PASSWORD: str = "your-email-password"
+    FROM_EMAIL: str = "your-email-user"
     
     class Config:
         env_file = "../.env"  # .env is in project root, not backend folder
