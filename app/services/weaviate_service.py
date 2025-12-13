@@ -40,10 +40,14 @@ class WeaviateService:
                 hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
                 # For cloud deployments, use standard ports
                 http_port = parsed.port or (443 if is_secure else 80)
-                # gRPC port must be different from HTTP port - use 80 for gRPC when HTTP is 443
-                grpc_port = 80 if http_port == 443 else 50051
                 
-                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port}, grpc_port={grpc_port})")
+                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port})")
+                
+                # For Railway deployments, gRPC is not exposed, so we skip init checks
+                # and use HTTP-only communication
+                additional_config = wvc.init.AdditionalConfig(
+                    timeout=wvc.init.Timeout(init=30, query=60, insert=120)
+                )
                 
                 if settings.WEAVIATE_API_KEY:
                     self.client = weaviate.connect_to_custom(
@@ -51,9 +55,11 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname,
-                        grpc_port=grpc_port,
-                        grpc_secure=False,  # gRPC on port 80 is not secure
-                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
+                        grpc_port=http_port,  # Same port, but we skip init checks
+                        grpc_secure=is_secure,
+                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY),
+                        skip_init_checks=True,
+                        additional_config=additional_config
                     )
                 else:
                     self.client = weaviate.connect_to_custom(
@@ -61,8 +67,10 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname, 
-                        grpc_port=grpc_port,
-                        grpc_secure=False
+                        grpc_port=http_port,  # Same port, but we skip init checks
+                        grpc_secure=is_secure,
+                        skip_init_checks=True,
+                        additional_config=additional_config
                     )
             else:
                 # Local deployment (localhost or IP address)
