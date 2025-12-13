@@ -38,10 +38,12 @@ class WeaviateService:
                 
                 is_secure = parsed.scheme == "https"
                 hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
-                # For cloud deployments, use standard ports (443 for https, 80 for http)
+                # For cloud deployments, use standard ports
                 http_port = parsed.port or (443 if is_secure else 80)
+                # gRPC port must be different from HTTP port - use 80 for gRPC when HTTP is 443
+                grpc_port = 80 if http_port == 443 else 50051
                 
-                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure})")
+                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port}, grpc_port={grpc_port})")
                 
                 if settings.WEAVIATE_API_KEY:
                     self.client = weaviate.connect_to_custom(
@@ -49,8 +51,8 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname,
-                        grpc_port=443 if is_secure else 50051,
-                        grpc_secure=is_secure,
+                        grpc_port=grpc_port,
+                        grpc_secure=False,  # gRPC on port 80 is not secure
                         auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
                     )
                 else:
@@ -59,8 +61,8 @@ class WeaviateService:
                         http_port=http_port,
                         http_secure=is_secure,
                         grpc_host=hostname, 
-                        grpc_port=443 if is_secure else 50051,
-                        grpc_secure=is_secure
+                        grpc_port=grpc_port,
+                        grpc_secure=False
                     )
             else:
                 # Local deployment (localhost or IP address)
