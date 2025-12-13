@@ -28,23 +28,60 @@ class WeaviateService:
             return
         
         try:
-            # Connect to Weaviate
-            if settings.WEAVIATE_API_KEY:
-                self.client = weaviate.connect_to_custom(
-                    http_host=settings.WEAVIATE_HOST,
-                    http_port=settings.WEAVIATE_PORT,
-                    http_secure=False,
-                    grpc_host=settings.WEAVIATE_HOST,
-                    grpc_port=settings.WEAVIATE_GRPC_PORT,
-                    grpc_secure=False,
-                    auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
-                )
+            host = settings.WEAVIATE_HOST
+            
+            # Check if WEAVIATE_HOST is a full URL (for cloud/production deployments)
+            if host.startswith("https://") or host.startswith("http://"):
+                # Parse the URL - it's a cloud deployment (e.g., Railway)
+                from urllib.parse import urlparse
+                parsed = urlparse(host)
+                
+                is_secure = parsed.scheme == "https"
+                hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
+                # For cloud deployments, use standard ports (443 for https, 80 for http)
+                http_port = parsed.port or (443 if is_secure else 80)
+                
+                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure})")
+                
+                if settings.WEAVIATE_API_KEY:
+                    self.client = weaviate.connect_to_custom(
+                        http_host=hostname,
+                        http_port=http_port,
+                        http_secure=is_secure,
+                        grpc_host=hostname,
+                        grpc_port=443 if is_secure else 50051,
+                        grpc_secure=is_secure,
+                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
+                    )
+                else:
+                    self.client = weaviate.connect_to_custom(
+                        http_host=hostname,
+                        http_port=http_port,
+                        http_secure=is_secure,
+                        grpc_host=hostname, 
+                        grpc_port=443 if is_secure else 50051,
+                        grpc_secure=is_secure
+                    )
             else:
-                self.client = weaviate.connect_to_local(
-                    host=settings.WEAVIATE_HOST,
-                    port=settings.WEAVIATE_PORT,
-                    grpc_port=settings.WEAVIATE_GRPC_PORT
-                )
+                # Local deployment (localhost or IP address)
+                logger.info(f"Connecting to local Weaviate at {host}:{settings.WEAVIATE_PORT}")
+                
+                if settings.WEAVIATE_API_KEY:
+                    self.client = weaviate.connect_to_custom(
+                        http_host=host,
+                        http_port=settings.WEAVIATE_PORT,
+                        http_secure=False,
+                        grpc_host=host,
+                        grpc_port=settings.WEAVIATE_GRPC_PORT,
+                        grpc_secure=False,
+                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
+                    )
+                else:
+                    self.client = weaviate.connect_to_local(
+                        host=host,
+                        port=settings.WEAVIATE_PORT,
+                        grpc_port=settings.WEAVIATE_GRPC_PORT
+                    )
             
             self._connected = True
             logger.info("Connected to Weaviate successfully")
