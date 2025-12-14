@@ -38,17 +38,24 @@ class DocumentService:
         metadata: Optional[DocumentCreate] = None
     ) -> Document:
         """Upload and process a document."""
-        # Validate file
-        await self._validate_file(file)
+        # Validate filename and extension
+        self._validate_file_metadata(file)
         
         # Generate unique filename
         file_ext = file.filename.split('.')[-1].lower()
         unique_filename = f"{uuid.uuid4()}.{file_ext}"
         storage_path = f"{user_id}/{unique_filename}"
         
-        # Read file content
+        # Read file content once
         content = await file.read()
         file_size = len(content)
+        
+        # Validate file size
+        if file_size > settings.MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE / (1024*1024):.1f}MB"
+            )
         
         # Calculate content hash
         content_hash = hashlib.sha256(content).hexdigest()
@@ -266,8 +273,8 @@ class DocumentService:
         
         return document
     
-    async def _validate_file(self, file: UploadFile):
-        """Validate uploaded file."""
+    def _validate_file_metadata(self, file: UploadFile):
+        """Validate file metadata (filename and extension). Sync method."""
         if not file.filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -279,16 +286,6 @@ class DocumentService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"File type not allowed. Allowed types: {', '.join(settings.ALLOWED_EXTENSIONS)}"
-            )
-        
-        # Check file size (read and reset)
-        content = await file.read()
-        await file.seek(0)
-        
-        if len(content) > settings.MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE / (1024*1024):.1f}MB"
             )
     
     async def _check_duplicate(self, user_id: int, content_hash: str) -> Optional[Document]:

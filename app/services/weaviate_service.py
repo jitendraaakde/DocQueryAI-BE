@@ -21,6 +21,18 @@ class WeaviateService:
     def __init__(self):
         self.client = None
         self._connected = False
+        self._cached_base_url = None
+    
+    @property
+    def base_url(self) -> str:
+        """Get cached base URL for Weaviate HTTP requests."""
+        if self._cached_base_url is None:
+            host = settings.WEAVIATE_HOST
+            if host.startswith("https://") or host.startswith("http://"):
+                self._cached_base_url = host.rstrip("/")
+            else:
+                self._cached_base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
+        return self._cached_base_url
     
     async def connect(self):
         """Connect to Weaviate."""
@@ -171,34 +183,20 @@ class WeaviateService:
         document_name: str
     ) -> List[str]:
         """Add document chunks to Weaviate with embeddings from Jina API."""
-        logger.info(f"=== ADD_CHUNKS START ===")
-        logger.info(f"Document ID: {document_id}, User ID: {user_id}, Document Name: {document_name}")
-        logger.info(f"Number of chunks to add: {len(chunks)}")
+        logger.debug(f"Adding {len(chunks)} chunks for document {document_id}")
         
         if not self._connected:
-            logger.info("Not connected to Weaviate, connecting now...")
             await self.connect()
         
-        logger.info(f"Getting collection: {self.COLLECTION_NAME}")
         collection = self.client.collections.get(self.COLLECTION_NAME)
-        logger.info(f"Collection obtained: {collection}")
         weaviate_ids = []
         
         try:
-            # Generate embeddings for all chunks using Jina API
-            logger.info("Getting embedding service...")
             from app.services.embedding_service import get_embedding_service
             embedding_service = get_embedding_service()
             
             chunk_texts = [chunk["content"] for chunk in chunks]
-            logger.info(f"Chunk texts extracted. First chunk preview: {chunk_texts[0][:100] if chunk_texts else 'N/A'}...")
-            
-            logger.info("Generating embeddings via Jina API...")
             embeddings = await embedding_service.get_embeddings(chunk_texts)
-            logger.info(f"Embeddings generated. Count: {len(embeddings)}, First embedding dimension: {len(embeddings[0]) if embeddings else 'N/A'}")
-            
-            # Use HTTP REST-based insertion instead of gRPC batch (Render doesn't support gRPC)
-            logger.info("Starting HTTP REST-based insert (one by one)...")
             
             for i, chunk in enumerate(chunks):
                 properties = {
@@ -210,30 +208,17 @@ class WeaviateService:
                     "page_number": chunk.get("page_number", 0)
                 }
                 
-                logger.info(f"Inserting chunk {i+1}/{len(chunks)}...")
-                
-                try:
-                    # Use data.insert() which uses HTTP REST API
-                    uuid = collection.data.insert(
-                        properties=properties,
-                        vector=embeddings[i]
-                    )
-                    logger.info(f"Chunk {i+1} inserted successfully with UUID: {uuid}")
-                    weaviate_ids.append(str(uuid))
-                except Exception as chunk_error:
-                    logger.error(f"Failed to insert chunk {i+1}: {chunk_error}")
-                    raise
+                uuid = collection.data.insert(
+                    properties=properties,
+                    vector=embeddings[i]
+                )
+                weaviate_ids.append(str(uuid))
             
-            logger.info(f"=== ADD_CHUNKS SUCCESS ===")
-            logger.info(f"Added {len(chunks)} chunks with embeddings for document {document_id}")
-            logger.info(f"Weaviate IDs returned: {weaviate_ids}")
+            logger.info(f"Added {len(chunks)} chunks for document {document_id}")
             return weaviate_ids
             
         except Exception as e:
-            logger.error(f"=== ADD_CHUNKS FAILED ===")
-            logger.error(f"Failed to add chunks to Weaviate: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
+            logger.error(f"Failed to add chunks: {e}")
             raise
     
     # GraphQL enum values that should not be quoted
@@ -342,14 +327,6 @@ class WeaviateService:
             
             # Make HTTP REST request to Weaviate GraphQL endpoint
             import httpx
-            from app.core.config import settings
-            
-            # Construct the URL
-            host = settings.WEAVIATE_HOST
-            if host.startswith("https://") or host.startswith("http://"):
-                base_url = host.rstrip("/")
-            else:
-                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
             
             headers = {"Content-Type": "application/json"}
             if settings.WEAVIATE_API_KEY:
@@ -357,14 +334,14 @@ class WeaviateService:
             
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{base_url}/v1/graphql",
+                    f"{self.base_url}/v1/graphql",
                     json=graphql_query,
                     headers=headers
                 )
                 response.raise_for_status()
                 data = response.json()
             
-            logger.info(f"GraphQL response received: {data}")
+            data = response.json()
             
             # Check for errors
             if "errors" in data and data["errors"]:
@@ -393,8 +370,6 @@ class WeaviateService:
             
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     async def delete_document_chunks(self, document_id: int):
@@ -404,20 +379,12 @@ class WeaviateService:
         
         try:
             import httpx
-            from app.core.config import settings
-            
-            # Construct the URL
-            host = settings.WEAVIATE_HOST
-            if host.startswith("https://") or host.startswith("http://"):
-                base_url = host.rstrip("/")
-            else:
-                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
+            import json
             
             headers = {"Content-Type": "application/json"}
             if settings.WEAVIATE_API_KEY:
                 headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
             
-            # Use batch delete via REST API
             delete_payload = {
                 "match": {
                     "class": self.COLLECTION_NAME,
@@ -430,19 +397,19 @@ class WeaviateService:
             }
             
             async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.delete(
-                    f"{base_url}/v1/batch/objects",
-                    json=delete_payload,
+                # Use request() with DELETE method since delete() doesn't support json body
+                response = await client.request(
+                    method="DELETE",
+                    url=f"{self.base_url}/v1/batch/objects",
+                    content=json.dumps(delete_payload),
                     headers=headers
                 )
                 response.raise_for_status()
                 data = response.json()
             
-            logger.info(f"Deleted chunks for document {document_id}. Response: {data}")
+            logger.info(f"Deleted chunks for document {document_id}")
         except Exception as e:
             logger.error(f"Failed to delete chunks: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     async def health_check(self) -> bool:
@@ -462,14 +429,6 @@ class WeaviateService:
         
         try:
             import httpx
-            from app.core.config import settings
-            
-            # Construct the URL
-            host = settings.WEAVIATE_HOST
-            if host.startswith("https://") or host.startswith("http://"):
-                base_url = host.rstrip("/")
-            else:
-                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
             
             headers = {"Content-Type": "application/json"}
             if settings.WEAVIATE_API_KEY:
@@ -477,7 +436,7 @@ class WeaviateService:
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    f"{base_url}/v1/schema/{self.COLLECTION_NAME}",
+                    f"{self.base_url}/v1/schema/{self.COLLECTION_NAME}",
                     headers=headers
                 )
                 if response.status_code == 404:
@@ -505,8 +464,6 @@ class WeaviateService:
             return True
         except Exception as e:
             logger.error(f"Failed to reset collection: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
 
 

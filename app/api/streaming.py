@@ -14,6 +14,7 @@ from app.models.user import User
 from app.services.chat_service import chat_service
 from app.services.weaviate_service import weaviate_service
 from app.services.llm_service import llm_service
+from app.services.query_service import build_sources
 from app.core.config import settings
 
 router = APIRouter(prefix="/stream", tags=["streaming"])
@@ -54,18 +55,8 @@ async def generate_stream(
     
     yield f"data: {json.dumps({'type': 'thinking', 'content': 'Generating response...'})}\n\n"
     
-    # Build sources
-    sources = [
-        {
-            "document_id": result["document_id"],
-            "document_name": result["document_name"],
-            "chunk_id": result["chunk_index"],
-            "content": result["content"][:300] + "..." if len(result["content"]) > 300 else result["content"],
-            "relevance_score": result["score"],
-            "page": result.get("page_number")
-        }
-        for result in search_results
-    ]
+    # Build sources using shared helper
+    sources = build_sources(search_results)
     
     # Get chat context
     context = await chat_service.get_session_context(db, session_id, user_id, max_messages=10)

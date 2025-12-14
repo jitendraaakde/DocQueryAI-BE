@@ -14,6 +14,43 @@ from app.services.llm_service import llm_service
 logger = logging.getLogger(__name__)
 
 
+def build_sources(search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build sources list from search results. Full content preserved."""
+    return [
+        {
+            "document_id": result["document_id"],
+            "document_name": result["document_name"],
+            "chunk_id": result["chunk_index"],
+            "content": result["content"],  # Full content, no truncation
+            "relevance_score": result["score"],
+            "page": result.get("page_number")
+        }
+        for result in search_results
+    ]
+
+
+def calculate_confidence(results: List[Dict[str, Any]]) -> float:
+    """Calculate confidence score based on search results."""
+    if not results:
+        return 0.0
+    
+    weights = [1.0, 0.8, 0.6, 0.4, 0.2]
+    weighted_sum = 0.0
+    weight_total = 0.0
+    
+    for i, result in enumerate(results):
+        if i >= len(weights):
+            break
+        score = result.get("score", 0)
+        weighted_sum += score * weights[i]
+        weight_total += weights[i]
+    
+    if weight_total == 0:
+        return 0.0
+    
+    return round(min(1.0, weighted_sum / weight_total), 3)
+
+
 class QueryService:
     """Service for query processing and response generation."""
     
@@ -45,24 +82,11 @@ class QueryService:
             context_chunks=search_results
         )
         generation_time = int((time.time() - generation_start) * 1000)
-        
         total_time = int((time.time() - start_time) * 1000)
         
-        # Build sources
-        sources = [
-            {
-                "document_id": result["document_id"],
-                "document_name": result["document_name"],
-                "chunk_id": result["chunk_index"],
-                "content": result["content"][:300] + "..." if len(result["content"]) > 300 else result["content"],
-                "relevance_score": result["score"],
-                "page": result.get("page_number")
-            }
-            for result in search_results
-        ]
-        
-        # Calculate confidence score
-        confidence_score = self._calculate_confidence(search_results)
+        # Build sources and calculate confidence
+        sources = build_sources(search_results)
+        confidence_score = calculate_confidence(search_results)
         
         # Save query to database
         query_record = Query(
@@ -101,13 +125,11 @@ class QueryService:
         page_size: int = 20
     ) -> QueryHistoryResponse:
         """Get paginated query history for a user."""
-        # Get total count
         count_result = await self.db.execute(
             select(func.count(Query.id)).where(Query.user_id == user_id)
         )
         total = count_result.scalar()
         
-        # Get queries
         offset = (page - 1) * page_size
         result = await self.db.execute(
             select(Query)
@@ -117,7 +139,6 @@ class QueryService:
             .limit(page_size)
         )
         queries = result.scalars().all()
-        
         total_pages = (total + page_size - 1) // page_size
         
         return QueryHistoryResponse(
@@ -150,10 +171,7 @@ class QueryService:
     ):
         """Rate a query response."""
         result = await self.db.execute(
-            select(Query).where(
-                Query.id == query_id,
-                Query.user_id == user_id
-            )
+            select(Query).where(Query.id == query_id, Query.user_id == user_id)
         )
         query = result.scalar_one_or_none()
         
@@ -163,37 +181,7 @@ class QueryService:
         query.rating = rating
         query.feedback = feedback
         await self.db.flush()
-        
         logger.info(f"Query {query_id} rated {rating}/5")
-    
-    def _calculate_confidence(self, results: List[Dict[str, Any]]) -> float:
-        """Calculate confidence score based on search results."""
-        if not results:
-            return 0.0
-        
-        # Average score of top results, weighted by position
-        weights = [1.0, 0.8, 0.6, 0.4, 0.2]
-        weighted_sum = 0.0
-        weight_total = 0.0
-        
-        for i, result in enumerate(results):
-            if i >= len(weights):
-                break
-            score = result.get("score", 0)
-            weighted_sum += score * weights[i]
-            weight_total += weights[i]
-        
-        if weight_total == 0:
-            return 0.0
-        
-        # Normalize to 0-1 range
-        confidence = min(1.0, weighted_sum / weight_total)
-        return round(confidence, 3)
-
-
-# Standalone function for chat integration
-class QueryServiceStandalone:
-    """Standalone query service for chat integration."""
     
     async def query_documents(
         self,
@@ -203,10 +191,9 @@ class QueryServiceStandalone:
         document_ids: Optional[List[int]] = None,
         chat_context: Optional[List[dict]] = None,
     ) -> Dict[str, Any]:
-        """Process a query with optional chat context."""
+        """Process a query with optional chat context (for chat integration)."""
         start_time = time.time()
         
-        # Search for relevant chunks
         search_results = await weaviate_service.search(
             query=query_text,
             user_id=user_id,
@@ -214,20 +201,8 @@ class QueryServiceStandalone:
             limit=5
         )
         
-        # Build sources
-        sources = [
-            {
-                "document_id": result["document_id"],
-                "document_name": result["document_name"],
-                "chunk_id": result["chunk_index"],
-                "content": result["content"][:300] + "..." if len(result["content"]) > 300 else result["content"],
-                "relevance_score": result["score"],
-                "page": result.get("page_number")
-            }
-            for result in search_results
-        ]
+        sources = build_sources(search_results)
         
-        # Generate response with chat context
         response_text = await llm_service.generate_response(
             query=query_text,
             context_chunks=search_results,
@@ -245,5 +220,4 @@ class QueryServiceStandalone:
 
 
 # Singleton for chat integration
-query_service = QueryServiceStandalone()
-
+query_service = QueryService(None)  # db will be passed per request
