@@ -158,3 +158,46 @@ async def reprocess_document(
     
     await db.refresh(document)
     return document
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Download a document file for viewing."""
+    from fastapi.responses import Response
+    from app.services.storage_service import storage_service
+    
+    document_service = DocumentService(db)
+    document = await document_service.get_document(document_id, user_id)
+    
+    # Download file content
+    try:
+        content = await storage_service.download_file(document.file_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {str(e)}"
+        )
+    
+    # Determine content type
+    content_types = {
+        "pdf": "application/pdf",
+        "txt": "text/plain",
+        "md": "text/markdown",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }
+    content_type = content_types.get(document.file_type, "application/octet-stream")
+    
+    # Return file with Content-Disposition for inline viewing
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"inline; filename=\"{document.original_filename}\"",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )

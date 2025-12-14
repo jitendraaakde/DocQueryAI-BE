@@ -46,7 +46,25 @@ async def list_collections(
     collections = await collection_service.get_user_collections(
         db, current_user.id, include_shared=include_shared
     )
-    return CollectionList(collections=collections, total=len(collections))
+    
+    # Build response with document counts
+    collection_responses = [
+        CollectionResponse(
+            id=c.id,
+            user_id=c.user_id,
+            name=c.name,
+            description=c.description,
+            color=c.color,
+            icon=c.icon,
+            is_public=c.is_public,
+            document_count=len(c.documents),
+            created_at=c.created_at,
+            updated_at=c.updated_at
+        )
+        for c in collections
+    ]
+    
+    return CollectionList(collections=collection_responses, total=len(collection_responses))
 
 
 @router.get("/{collection_id}", response_model=CollectionWithDocuments)

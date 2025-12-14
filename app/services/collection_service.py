@@ -92,8 +92,12 @@ class CollectionService:
         include_shared: bool = True
     ) -> List[Collection]:
         """Get all collections for a user (owned and shared)."""
-        # Get owned collections
-        owned_query = select(Collection).where(Collection.user_id == user_id)
+        # Get owned collections with documents loaded for count
+        owned_query = (
+            select(Collection)
+            .where(Collection.user_id == user_id)
+            .options(selectinload(Collection.documents))
+        )
         result = await db.execute(owned_query)
         collections = list(result.scalars().all())
         
@@ -103,6 +107,7 @@ class CollectionService:
                 select(Collection)
                 .join(CollectionShare)
                 .where(CollectionShare.shared_with_user_id == user_id)
+                .options(selectinload(Collection.documents))
             )
             shared_result = await db.execute(shared_query)
             collections.extend(shared_result.scalars().all())
@@ -154,7 +159,7 @@ class CollectionService:
         document_ids: List[int]
     ) -> bool:
         """Add documents to a collection."""
-        collection = await self.get_collection(db, collection_id, user_id)
+        collection = await self.get_collection(db, collection_id, user_id, include_documents=True)
         if not collection:
             return False
         

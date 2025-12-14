@@ -120,17 +120,10 @@ CRITICAL FORMATTING RULES (MUST FOLLOW):
 - Keep each paragraph short (2-3 sentences max)
 - DO NOT include source citations like "(Source 1, Source 2)" - sources are shown separately
 
-RESPONSE STRUCTURE:
-- Start with a brief intro paragraph
-- (blank line)
-- Use headings for different topics/people/sections
-- (blank line between each section)
-- End with key takeaways if appropriate
-
 RESPONSE GUIDELINES:
 1. Answer based ONLY on the provided context
 2. If no relevant info found, say "I couldn't find information about that in the provided documents."
-3. Be concise - get to the point quickly
+3. Be concise - get to the point quickly, genetate short responses but contains required information.
 4. Synthesize information naturally
 5. Use a professional, helpful tone"""
 
