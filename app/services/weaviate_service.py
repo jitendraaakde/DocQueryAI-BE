@@ -454,6 +454,60 @@ class WeaviateService:
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
+    
+    async def get_schema(self) -> Dict[str, Any]:
+        """Get the current schema of the collection for debugging."""
+        if not self._connected:
+            await self.connect()
+        
+        try:
+            import httpx
+            from app.core.config import settings
+            
+            # Construct the URL
+            host = settings.WEAVIATE_HOST
+            if host.startswith("https://") or host.startswith("http://"):
+                base_url = host.rstrip("/")
+            else:
+                base_url = f"http://{host}:{settings.WEAVIATE_PORT}"
+            
+            headers = {"Content-Type": "application/json"}
+            if settings.WEAVIATE_API_KEY:
+                headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{base_url}/v1/schema/{self.COLLECTION_NAME}",
+                    headers=headers
+                )
+                if response.status_code == 404:
+                    return {"error": "Collection not found"}
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get schema: {e}")
+            return {"error": str(e)}
+    
+    async def reset_collection(self) -> bool:
+        """Delete and recreate the collection with the correct schema."""
+        if not self._connected:
+            await self.connect()
+        
+        try:
+            # Delete the existing collection if it exists
+            if self.client.collections.exists(self.COLLECTION_NAME):
+                self.client.collections.delete(self.COLLECTION_NAME)
+                logger.info(f"Deleted collection: {self.COLLECTION_NAME}")
+            
+            # Recreate the collection
+            await self._ensure_collection()
+            logger.info(f"Recreated collection: {self.COLLECTION_NAME}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to reset collection: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            return False
 
 
 # Singleton instance

@@ -58,3 +58,32 @@ async def detailed_health_check():
         health["services"]["llm"] = {"status": "not_configured"}
     
     return health
+
+
+@router.get("/weaviate/schema")
+async def get_weaviate_schema():
+    """Get the current Weaviate schema for debugging."""
+    schema = await weaviate_service.get_schema()
+    return {
+        "collection": weaviate_service.COLLECTION_NAME,
+        "schema": schema
+    }
+
+
+@router.get("/weaviate/reset")
+async def reset_weaviate_collection():
+    """Reset (delete and recreate) the Weaviate collection.
+    
+    WARNING: This will delete all vector data in the collection!
+    """
+    success = await weaviate_service.reset_collection()
+    if success:
+        return {
+            "status": "success",
+            "message": f"Collection {weaviate_service.COLLECTION_NAME} has been reset"
+        }
+    else:
+        return {
+            "status": "error",
+            "message": "Failed to reset collection. Check logs for details."
+        }
