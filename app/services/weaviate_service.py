@@ -22,6 +22,7 @@ class WeaviateService:
         self.client = None
         self._connected = False
         self._cached_base_url = None
+        self._schema_property_types: Dict[str, str] = {}  # Cache for property types from schema
     
     @property
     def base_url(self) -> str:
@@ -221,31 +222,7 @@ class WeaviateService:
             logger.error(f"Failed to add chunks: {e}")
             raise
     
-    # GraphQL enum values that should not be quoted
-    GRAPHQL_ENUMS = {"And", "Or", "Equal", "NotEqual", "GreaterThan", "GreaterThanEqual", 
-                     "LessThan", "LessThanEqual", "Like", "WithinGeoRange", "IsNull", "ContainsAny", "ContainsAll"}
-    
-    def _to_graphql(self, obj: Any, key: str = None) -> str:
-        """Convert Python object to GraphQL format (unquoted keys, enum values)."""
-        import json
-        if isinstance(obj, dict):
-            items = []
-            for k, value in obj.items():
-                items.append(f"{k}: {self._to_graphql(value, k)}")
-            return "{" + ", ".join(items) + "}"
-        elif isinstance(obj, list):
-            return "[" + ", ".join(self._to_graphql(item, key) for item in obj) + "]"
-        elif isinstance(obj, str):
-            # Check if this is an enum value (for 'operator' field)
-            if key == "operator" and obj in self.GRAPHQL_ENUMS:
-                return obj  # Don't quote enum values
-            return json.dumps(obj)  # Properly escape strings
-        elif isinstance(obj, bool):
-            return "true" if obj else "false"
-        elif obj is None:
-            return "null"
-        else:
-            return str(obj)
+
     
     async def search(
         self,
@@ -254,7 +231,10 @@ class WeaviateService:
         document_ids: Optional[List[int]] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
-        """Search for relevant chunks using vector search with Jina embeddings via HTTP REST API."""
+        """Search for relevant chunks using vector search with Jina embeddings.
+        
+        Uses HTTP REST API for cloud deployments where gRPC is not available.
+        """
         if not self._connected:
             await self.connect()
         
@@ -266,15 +246,15 @@ class WeaviateService:
             
             logger.info(f"Performing vector search for query: {query[:50]}...")
             
-            # Build where filter
+            # Ensure we have schema types cached
+            if not self._schema_property_types:
+                await self._cache_schema_types()
+            
+            # Build where filter for GraphQL with correct value types
             where_filter = {
                 "operator": "And",
                 "operands": [
-                    {
-                        "path": ["user_id"],
-                        "operator": "Equal",
-                        "valueInt": user_id
-                    }
+                    self._build_filter_operand("user_id", "Equal", user_id)
                 ]
             }
             
@@ -282,29 +262,25 @@ class WeaviateService:
                 doc_filter = {
                     "operator": "Or",
                     "operands": [
-                        {
-                            "path": ["document_id"],
-                            "operator": "Equal",
-                            "valueInt": doc_id
-                        } for doc_id in document_ids
+                        self._build_filter_operand("document_id", "Equal", doc_id)
+                        for doc_id in document_ids
                     ]
                 }
                 where_filter["operands"].append(doc_filter)
             
-            # Convert to GraphQL format (unquoted keys)
-            where_graphql = self._to_graphql(where_filter)
-            vector_graphql = str(query_vector)
-            
             # Build GraphQL query
+            import json
+            import httpx
+            
             graphql_query = {
                 "query": f"""
                 {{
                     Get {{
-                        DocQueryChunks(
+                        {self.COLLECTION_NAME}(
                             nearVector: {{
-                                vector: {vector_graphql}
+                                vector: {query_vector}
                             }}
-                            where: {where_graphql}
+                            where: {self._format_where_filter(where_filter)}
                             limit: {limit}
                         ) {{
                             content
@@ -326,8 +302,6 @@ class WeaviateService:
             logger.debug(f"GraphQL query: {graphql_query['query']}")
             
             # Make HTTP REST request to Weaviate GraphQL endpoint
-            import httpx
-            
             headers = {"Content-Type": "application/json"}
             if settings.WEAVIATE_API_KEY:
                 headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
@@ -341,15 +315,13 @@ class WeaviateService:
                 response.raise_for_status()
                 data = response.json()
             
-            data = response.json()
-            
             # Check for errors
             if "errors" in data and data["errors"]:
                 logger.error(f"GraphQL errors: {data['errors']}")
                 return []
             
             results = []
-            chunks = data.get("data", {}).get("Get", {}).get("DocQueryChunks", []) or []
+            chunks = data.get("data", {}).get("Get", {}).get(self.COLLECTION_NAME, []) or []
             
             for obj in chunks:
                 additional = obj.get("_additional", {})
@@ -372,8 +344,89 @@ class WeaviateService:
             logger.error(f"Search failed: {e}")
             raise
     
+    def _format_where_filter(self, filter_dict: Dict[str, Any]) -> str:
+        """Format a filter dictionary to GraphQL syntax."""
+        import json
+        
+        def to_graphql(obj, key=None):
+            if isinstance(obj, dict):
+                items = [f"{k}: {to_graphql(v, k)}" for k, v in obj.items()]
+                return "{" + ", ".join(items) + "}"
+            elif isinstance(obj, list):
+                return "[" + ", ".join(to_graphql(item, key) for item in obj) + "]"
+            elif isinstance(obj, str):
+                # GraphQL operators should not be quoted
+                if key == "operator" and obj in {"And", "Or", "Equal", "NotEqual", 
+                    "GreaterThan", "LessThan", "Like", "ContainsAny", "ContainsAll"}:
+                    return obj
+                return json.dumps(obj)
+            elif isinstance(obj, bool):
+                return "true" if obj else "false"
+            elif obj is None:
+                return "null"
+            else:
+                return str(obj)
+        
+        return to_graphql(filter_dict)
+    
+    async def _cache_schema_types(self):
+        """Fetch and cache schema property types from Weaviate."""
+        try:
+            schema = await self.get_schema()
+            if "error" not in schema and "properties" in schema:
+                for prop in schema["properties"]:
+                    prop_name = prop.get("name", "")
+                    data_types = prop.get("dataType", [])
+                    if data_types:
+                        # Map Weaviate dataType to GraphQL value type
+                        weaviate_type = data_types[0].lower()
+                        if weaviate_type in ["int", "int64"]:
+                            self._schema_property_types[prop_name] = "valueInt"
+                        elif weaviate_type in ["number", "float", "double"]:
+                            self._schema_property_types[prop_name] = "valueNumber"
+                        elif weaviate_type == "text":
+                            self._schema_property_types[prop_name] = "valueText"
+                        elif weaviate_type == "boolean":
+                            self._schema_property_types[prop_name] = "valueBoolean"
+                        else:
+                            self._schema_property_types[prop_name] = "valueText"
+                logger.info(f"Cached schema property types: {self._schema_property_types}")
+            else:
+                # Default types if schema fetch fails
+                logger.warning("Schema fetch failed, using default types")
+                self._schema_property_types = {
+                    "user_id": "valueInt",
+                    "document_id": "valueInt",
+                    "chunk_index": "valueInt",
+                    "page_number": "valueInt",
+                    "content": "valueText",
+                    "document_name": "valueText"
+                }
+        except Exception as e:
+            logger.warning(f"Failed to cache schema types: {e}, using defaults")
+            self._schema_property_types = {
+                "user_id": "valueInt",
+                "document_id": "valueInt",
+                "chunk_index": "valueInt",
+                "page_number": "valueInt",
+                "content": "valueText",
+                "document_name": "valueText"
+            }
+    
+    def _build_filter_operand(self, property_name: str, operator: str, value: Any) -> Dict[str, Any]:
+        """Build a filter operand with the correct value type based on schema."""
+        value_type = self._schema_property_types.get(property_name, "valueInt")
+        return {
+            "path": [property_name],
+            "operator": operator,
+            value_type: value
+        }
+    
     async def delete_document_chunks(self, document_id: int):
-        """Delete all chunks for a document using HTTP REST API."""
+        """Delete all chunks for a document using HTTP REST API.
+        
+        Uses HTTP REST API for cloud deployments where gRPC is not available.
+        """
         if not self._connected:
             await self.connect()
         
@@ -381,23 +434,25 @@ class WeaviateService:
             import httpx
             import json
             
+            # Ensure we have schema types cached
+            if not self._schema_property_types:
+                await self._cache_schema_types()
+            
             headers = {"Content-Type": "application/json"}
             if settings.WEAVIATE_API_KEY:
                 headers["Authorization"] = f"Bearer {settings.WEAVIATE_API_KEY}"
             
+            # Build filter operand with correct value type from schema
+            filter_operand = self._build_filter_operand("document_id", "Equal", document_id)
+            
             delete_payload = {
                 "match": {
                     "class": self.COLLECTION_NAME,
-                    "where": {
-                        "path": ["document_id"],
-                        "operator": "Equal",
-                        "valueInt": document_id
-                    }
+                    "where": filter_operand
                 }
             }
             
             async with httpx.AsyncClient(timeout=60.0) as client:
-                # Use request() with DELETE method since delete() doesn't support json body
                 response = await client.request(
                     method="DELETE",
                     url=f"{self.base_url}/v1/batch/objects",
@@ -405,7 +460,6 @@ class WeaviateService:
                     headers=headers
                 )
                 response.raise_for_status()
-                data = response.json()
             
             logger.info(f"Deleted chunks for document {document_id}")
         except Exception as e:
