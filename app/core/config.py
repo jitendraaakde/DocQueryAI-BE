@@ -40,15 +40,9 @@ class Settings(BaseSettings):
             return f"{base_url}?ssl={self.POSTGRES_SSLMODE}"
         return base_url
     
-    # Weaviate
-    WEAVIATE_HOST: str = "localhost"
-    WEAVIATE_PORT: int = 8080
-    WEAVIATE_GRPC_PORT: int = 50051
-    WEAVIATE_API_KEY: Optional[str] = None
-    
-    @property
-    def WEAVIATE_URL(self) -> str:
-        return f"http://{self.WEAVIATE_HOST}:{self.WEAVIATE_PORT}"
+    # Zilliz Cloud (Milvus) - replaces Weaviate
+    ZILLIZ_CLOUD_URI: Optional[str] = None
+    ZILLIZ_CLOUD_TOKEN: Optional[str] = None
     
     # JWT
     JWT_SECRET_KEY: str = "your-jwt-secret-key"

@@ -14,10 +14,10 @@ import logging
 
 from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.schemas.document import DocumentCreate, DocumentUpdate, DocumentListResponse, DocumentResponse
-from app.services.weaviate_service import weaviate_service
+from app.services.milvus_service import milvus_service
 from app.services.storage_service import storage_service
 from app.core.config import settings
-from app.utils.text_extractor import extract_text_from_file
+from app.utils.text_extractor import extract_text_from_bytes
 from app.utils.text_chunker import chunk_text
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ class DocumentService:
             title=metadata.title if metadata else None,
             description=metadata.description if metadata else None,
             status=DocumentStatus.PENDING,
-            weaviate_collection=weaviate_service.COLLECTION_NAME
+            weaviate_collection=milvus_service.COLLECTION_NAME  # Column name kept for backwards compatibility
         )
         
         self.db.add(document)
@@ -108,22 +108,32 @@ class DocumentService:
         logger.info(f"Document {document.id} uploaded successfully")
         
         # Process document asynchronously (in production, use background task)
-        await self.process_document(document)
+        await self.process_document(document, content)
         
         # Refresh document to load all attributes after processing
         await self.db.refresh(document)
         
         return document
     
-    async def process_document(self, document: Document):
-        """Process a document: extract text, chunk, and vectorize."""
+    async def process_document(self, document: Document, content: bytes = None):
+        """Process a document: extract text, chunk, and vectorize.
+        
+        Args:
+            document: The document record
+            content: Optional file content bytes (if not provided, will download from storage)
+        """
         try:
             # Update status
             document.status = DocumentStatus.PROCESSING
             await self.db.flush()
             
-            # Extract text
-            text = await extract_text_from_file(document.file_path, document.file_type)
+            # Extract text - use bytes directly if available, otherwise download
+            if content:
+                text = await extract_text_from_bytes(content, document.file_type)
+            else:
+                # Fallback to downloading from storage (for reprocessing)
+                from app.utils.text_extractor import extract_text_from_file
+                text = await extract_text_from_file(document.file_path, document.file_type)
             
             if not text or len(text.strip()) == 0:
                 raise ValueError("No text could be extracted from the document")
@@ -146,18 +156,20 @@ class DocumentService:
             
             await self.db.flush()
             
-            # Add to Weaviate
-            weaviate_ids = await weaviate_service.add_chunks(
+            # Add to Zilliz Cloud (Milvus)
+            logger.info(f"Starting milvus_service.add_chunks for document {document.id} with {len(chunks)} chunks")
+            milvus_ids = await milvus_service.add_chunks(
                 chunks=chunks,
                 document_id=document.id,
                 user_id=document.user_id,
                 document_name=document.original_filename
             )
+            logger.info(f"Completed milvus_service.add_chunks, got {len(milvus_ids)} IDs")
             
-            # Update chunk records with Weaviate IDs
+            # Update chunk records with Milvus IDs
             for i, chunk in enumerate(db_chunks):
-                if i < len(weaviate_ids):
-                    chunk.weaviate_id = weaviate_ids[i]
+                if i < len(milvus_ids):
+                    chunk.weaviate_id = milvus_ids[i]  # Column name kept for backwards compatibility
             
             # Update document status
             document.status = DocumentStatus.COMPLETED
@@ -233,11 +245,11 @@ class DocumentService:
         """Delete a document and its chunks."""
         document = await self.get_document(document_id, user_id)
         
-        # Delete from Weaviate
+        # Delete from Zilliz Cloud (Milvus)
         try:
-            await weaviate_service.delete_document_chunks(document_id)
+            await milvus_service.delete_document_chunks(document_id)
         except Exception as e:
-            logger.warning(f"Failed to delete chunks from Weaviate: {e}")
+            logger.warning(f"Failed to delete chunks from Milvus: {e}")
         
         # Delete file from Supabase Storage
         try:

@@ -118,7 +118,14 @@ class StorageService:
         try:
             # If it's a full URL, download directly via HTTP
             if path.startswith("http"):
-                async with httpx.AsyncClient() as http_client:
+                # Configure timeout: 60s connect, 120s read, 180s total
+                timeout = httpx.Timeout(
+                    connect=60.0,
+                    read=120.0,
+                    write=60.0,
+                    pool=60.0
+                )
+                async with httpx.AsyncClient(timeout=timeout) as http_client:
                     response = await http_client.get(path)
                     response.raise_for_status()
                     return response.content

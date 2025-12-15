@@ -4,6 +4,7 @@ import weaviate
 from weaviate.classes.init import Auth
 from weaviate.classes.config import Configure, Property, DataType, VectorDistances
 from weaviate.classes.query import MetadataQuery, Filter
+from weaviate.config import ConnectionConfig
 import weaviate.classes as wvc
 from typing import List, Dict, Any, Optional
 import logging
@@ -36,87 +37,139 @@ class WeaviateService:
         return self._cached_base_url
     
     async def connect(self):
-        """Connect to Weaviate."""
+        """Connect to Weaviate with retry logic for cloud cold starts."""
         if self._connected and self.client:
             return
         
+        host = settings.WEAVIATE_HOST
+        is_cloud = host.startswith("https://") or host.startswith("http://")
+        
+        # Retry configuration for cloud deployments (cold starts)
+        max_retries = 3 if is_cloud else 1
+        base_delay = 5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                if is_cloud:
+                    await self._connect_cloud(host)
+                else:
+                    await self._connect_local(host)
+                
+                self._connected = True
+                logger.info("Connected to Weaviate successfully")
+                
+                # Initialize collection
+                await self._ensure_collection()
+                return
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff: 5s, 10s, 20s
+                    logger.warning(f"Weaviate connection attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
+                    import asyncio
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Failed to connect to Weaviate after {max_retries} attempts: {e}")
+                    raise
+    
+    async def _connect_cloud(self, host: str):
+        """Connect to cloud Weaviate instance (Railway/Render)."""
+        from urllib.parse import urlparse
+        import httpx
+        
+        parsed = urlparse(host)
+        
+        is_secure = parsed.scheme == "https"
+        hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
+        # For cloud deployments, use standard ports
+        http_port = parsed.port or (443 if is_secure else 80)
+        # gRPC port must be different from HTTP port for validation
+        # We use 50051 as a dummy port since we skip init checks anyway
+        grpc_port = 50051
+        
+        logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port})")
+        
+        # Pre-check: Make an HTTP request to warm up the connection and handle cold starts
+        # The Weaviate client has a short internal timeout, so we use httpx with longer timeout first
+        ready_url = f"{host}/v1/.well-known/ready"
+        timeout = httpx.Timeout(connect=60.0, read=60.0, write=30.0, pool=30.0)
+        
         try:
-            host = settings.WEAVIATE_HOST
-            
-            # Check if WEAVIATE_HOST is a full URL (for cloud/production deployments)
-            if host.startswith("https://") or host.startswith("http://"):
-                # Parse the URL - it's a cloud deployment (e.g., Railway)
-                from urllib.parse import urlparse
-                parsed = urlparse(host)
-                
-                is_secure = parsed.scheme == "https"
-                hostname = parsed.hostname or host.replace("https://", "").replace("http://", "")
-                # For cloud deployments, use standard ports
-                http_port = parsed.port or (443 if is_secure else 80)
-                # gRPC port must be different from HTTP port for validation
-                # We use 50051 as a dummy port since we skip init checks anyway
-                grpc_port = 50051
-                
-                logger.info(f"Connecting to cloud Weaviate at {hostname} (secure={is_secure}, http_port={http_port})")
-                
-                # For Railway deployments, gRPC is not exposed, so we skip init checks
-                additional_config = wvc.init.AdditionalConfig(
-                    timeout=wvc.init.Timeout(init=30, query=60, insert=120)
-                )
-                
-                if settings.WEAVIATE_API_KEY:
-                    self.client = weaviate.connect_to_custom(
-                        http_host=hostname,
-                        http_port=http_port,
-                        http_secure=is_secure,
-                        grpc_host=hostname,
-                        grpc_port=grpc_port,
-                        grpc_secure=is_secure,
-                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY),
-                        skip_init_checks=True,
-                        additional_config=additional_config
-                    )
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                logger.info(f"Pre-checking Weaviate readiness at {ready_url}")
+                response = await client.get(ready_url)
+                if response.status_code == 200:
+                    logger.info("Weaviate is ready, proceeding with client connection")
                 else:
-                    self.client = weaviate.connect_to_custom(
-                        http_host=hostname,
-                        http_port=http_port,
-                        http_secure=is_secure,
-                        grpc_host=hostname, 
-                        grpc_port=grpc_port,
-                        grpc_secure=is_secure,
-                        skip_init_checks=True,
-                        additional_config=additional_config
-                    )
-            else:
-                # Local deployment (localhost or IP address)
-                logger.info(f"Connecting to local Weaviate at {host}:{settings.WEAVIATE_PORT}")
-                
-                if settings.WEAVIATE_API_KEY:
-                    self.client = weaviate.connect_to_custom(
-                        http_host=host,
-                        http_port=settings.WEAVIATE_PORT,
-                        http_secure=False,
-                        grpc_host=host,
-                        grpc_port=settings.WEAVIATE_GRPC_PORT,
-                        grpc_secure=False,
-                        auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
-                    )
-                else:
-                    self.client = weaviate.connect_to_local(
-                        host=host,
-                        port=settings.WEAVIATE_PORT,
-                        grpc_port=settings.WEAVIATE_GRPC_PORT
-                    )
-            
-            self._connected = True
-            logger.info("Connected to Weaviate successfully")
-            
-            # Initialize collection
-            await self._ensure_collection()
-            
+                    logger.warning(f"Weaviate returned status {response.status_code}, attempting connection anyway")
+        except httpx.TimeoutException as e:
+            logger.warning(f"Weaviate readiness pre-check timed out: {e}")
+            raise  # Let retry logic handle it
         except Exception as e:
-            logger.error(f"Failed to connect to Weaviate: {e}")
-            raise
+            logger.warning(f"Weaviate readiness pre-check failed: {e}")
+            # Continue anyway, the client might succeed
+        
+        # For cloud deployments (Railway/Render), gRPC is not exposed, so we skip init checks
+        # Use longer timeouts for cold start scenarios - especially session_pool_timeout
+        # which controls the httpx connection timeout (default is 5 seconds, too short for cold starts)
+        additional_config = wvc.init.AdditionalConfig(
+            timeout=wvc.init.Timeout(
+                init=60,      # Connection initialization timeout (seconds)
+                query=120,    # Query operations timeout
+                insert=240    # Insert operations timeout
+            ),
+            connection=ConnectionConfig(
+                session_pool_connections=20,
+                session_pool_maxsize=100,
+                session_pool_max_retries=3,
+                session_pool_timeout=60  # Increased from 5s to 60s for cold starts
+            )
+        )
+        
+        if settings.WEAVIATE_API_KEY:
+            self.client = weaviate.connect_to_custom(
+                http_host=hostname,
+                http_port=http_port,
+                http_secure=is_secure,
+                grpc_host=hostname,
+                grpc_port=grpc_port,
+                grpc_secure=is_secure,
+                auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY),
+                skip_init_checks=True,
+                additional_config=additional_config
+            )
+        else:
+            self.client = weaviate.connect_to_custom(
+                http_host=hostname,
+                http_port=http_port,
+                http_secure=is_secure,
+                grpc_host=hostname, 
+                grpc_port=grpc_port,
+                grpc_secure=is_secure,
+                skip_init_checks=True,
+                additional_config=additional_config
+            )
+    
+    async def _connect_local(self, host: str):
+        """Connect to local Weaviate instance."""
+        logger.info(f"Connecting to local Weaviate at {host}:{settings.WEAVIATE_PORT}")
+        
+        if settings.WEAVIATE_API_KEY:
+            self.client = weaviate.connect_to_custom(
+                http_host=host,
+                http_port=settings.WEAVIATE_PORT,
+                http_secure=False,
+                grpc_host=host,
+                grpc_port=settings.WEAVIATE_GRPC_PORT,
+                grpc_secure=False,
+                auth_credentials=Auth.api_key(settings.WEAVIATE_API_KEY)
+            )
+        else:
+            self.client = weaviate.connect_to_local(
+                host=host,
+                port=settings.WEAVIATE_PORT,
+                grpc_port=settings.WEAVIATE_GRPC_PORT
+            )
     
     async def disconnect(self):
         """Disconnect from Weaviate."""

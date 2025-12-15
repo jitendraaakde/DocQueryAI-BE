@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import init_db
 from app.api.router import api_router
-from app.services.weaviate_service import weaviate_service
+from app.services.milvus_service import milvus_service
 
 # Configure logging
 logging.basicConfig(
@@ -39,12 +39,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
     
-    # Connect to Weaviate
+    # Connect to Zilliz Cloud (Milvus)
     try:
-        await weaviate_service.connect()
-        logger.info("Connected to Weaviate")
+        await milvus_service.connect()
+        logger.info("Connected to Zilliz Cloud")
     except Exception as e:
-        logger.warning(f"Failed to connect to Weaviate: {e}")
+        logger.warning(f"Failed to connect to Zilliz Cloud: {e}")
     
     logger.info("DocQuery AI started successfully!")
     
@@ -53,8 +53,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down DocQuery AI...")
     
-    # Disconnect from Weaviate
-    await weaviate_service.disconnect()
+    # Disconnect from Zilliz Cloud
+    await milvus_service.disconnect()
     
     logger.info("DocQuery AI shutdown complete")
 

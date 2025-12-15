@@ -12,7 +12,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.services.chat_service import chat_service
-from app.services.weaviate_service import weaviate_service
+from app.services.milvus_service import milvus_service
 from app.services.llm_service import llm_service
 from app.services.query_service import build_sources
 from app.core.config import settings
@@ -46,11 +46,11 @@ async def generate_stream(
     start_time = time.time()
     
     # Search for relevant chunks
-    search_results = await weaviate_service.search(
+    search_results = await milvus_service.search(
         query=message,
         user_id=user_id,
         document_ids=document_ids if document_ids else None,
-        limit=5
+        limit=3
     )
     
     yield f"data: {json.dumps({'type': 'thinking', 'content': 'Generating response...'})}\n\n"

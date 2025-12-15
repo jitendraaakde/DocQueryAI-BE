@@ -15,9 +15,53 @@ def is_url(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
 
+async def extract_text_from_bytes(content: bytes, file_type: str) -> str:
+    """
+    Extract text content directly from file bytes.
+    
+    Args:
+        content: File content as bytes
+        file_type: File extension (pdf, txt, docx, md)
+    
+    Returns:
+        Extracted text content
+    """
+    file_type = file_type.lower()
+    temp_file = None
+    
+    try:
+        # Write bytes to temp file for processing
+        import tempfile
+        suffix = f".{file_type}"
+        with tempfile.NamedTemporaryFile(mode='wb', suffix=suffix, delete=False) as f:
+            f.write(content)
+            temp_file = f.name
+        
+        logger.info(f"Processing file from memory ({len(content)} bytes)")
+        
+        if file_type == "pdf":
+            return await extract_from_pdf(temp_file)
+        elif file_type in ["txt", "md"]:
+            return await extract_from_text(temp_file)
+        elif file_type in ["doc", "docx"]:
+            return await extract_from_docx(temp_file)
+        else:
+            raise ValueError(f"Unsupported file type: {file_type}")
+    
+    finally:
+        # Clean up temp file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logger.info(f"Cleaned up temp file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file: {e}")
+
+
 async def extract_text_from_file(file_path: str, file_type: str) -> str:
     """
     Extract text content from a file based on its type.
+    This is kept for backward compatibility when processing from URLs.
     
     Args:
         file_path: Path to the file or Supabase URL

@@ -8,7 +8,7 @@ import logging
 
 from app.models.query import Query
 from app.schemas.query import QueryCreate, QueryResponse, QueryHistoryResponse, SourceChunk
-from app.services.weaviate_service import weaviate_service
+from app.services.milvus_service import milvus_service
 from app.services.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
@@ -67,11 +67,11 @@ class QueryService:
         
         # Search for relevant chunks
         search_start = time.time()
-        search_results = await weaviate_service.search(
+        search_results = await milvus_service.search(
             query=query_data.query_text,
             user_id=user_id,
             document_ids=query_data.document_ids,
-            limit=5
+            limit=3
         )
         search_time = int((time.time() - search_start) * 1000)
         
@@ -194,11 +194,11 @@ class QueryService:
         """Process a query with optional chat context (for chat integration)."""
         start_time = time.time()
         
-        search_results = await weaviate_service.search(
+        search_results = await milvus_service.search(
             query=query_text,
             user_id=user_id,
             document_ids=document_ids,
-            limit=5
+            limit=3
         )
         
         sources = build_sources(search_results)
