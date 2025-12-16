@@ -133,7 +133,7 @@ async def google_auth(
             # Firebase tokens are JWTs that can be verified via Google's public keys
             
             # Use Google's identity toolkit to verify the token
-            verify_url = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={settings.FIREBASE_API_KEY if hasattr(settings, 'FIREBASE_API_KEY') else 'AIzaSyBBV9qFYOJUdfhUFNJR9gXnNrwFWMOS6Ko'}"
+            verify_url = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={settings.FIREBASE_API_KEY or hasattr(settings, 'FIREBASE_API_KEY')}"
             
             response = await client.post(
                 verify_url,
