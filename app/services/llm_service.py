@@ -1,4 +1,4 @@
-"""LLM service for generating responses."""
+"""LLM service for generating responses with multi-provider support."""
 
 import logging
 import asyncio
@@ -11,84 +11,170 @@ logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for LLM-based response generation."""
+    """Service for LLM-based response generation supporting multiple providers."""
     
     def __init__(self):
-        self.provider = settings.LLM_PROVIDER
-        self._initialized = False
-        self._client = None
-        self._model = None
-    
-    def _initialize(self):
-        """Initialize the LLM provider."""
-        if self._initialized:
-            return
-        
-        if self.provider == "groq" and settings.GROQ_API_KEY:
-            from groq import Groq
-            self._client = Groq(api_key=settings.GROQ_API_KEY)
-            self._model = settings.GROQ_MODEL
-            self._initialized = True
-            logger.info(f"Initialized Groq LLM with model: {self._model}")
-        elif self.provider == "gemini" and settings.GEMINI_API_KEY:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            self._client = genai.GenerativeModel('gemini-2.0-flash')
-            self._model = "gemini-2.0-flash"
-            self._initialized = True
-            logger.info("Initialized Gemini LLM")
-        else:
-            logger.warning("No LLM provider configured")
+        # Default to env config
+        self._default_provider = settings.LLM_PROVIDER
+        self._default_groq_key = settings.GROQ_API_KEY
+        self._default_gemini_key = getattr(settings, 'GEMINI_API_KEY', None)
     
     async def generate_response(
         self,
         query: str,
         context_chunks: List[Dict[str, Any]],
-        chat_history: Optional[List[Dict[str, str]]] = None
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        user_settings: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Generate a response based on the query and context."""
-        self._initialize()
+        """Generate a response based on the query and context.
         
-        if not self._initialized or not self._client:
+        Args:
+            query: User's question
+            context_chunks: Relevant document chunks
+            chat_history: Previous conversation messages
+            user_settings: Optional user settings dict with keys:
+                - llm_provider: groq/openai/anthropic/gemini
+                - llm_model: model identifier
+                - temperature: float 0-2
+                - max_tokens: int
+                - openai_api_key, anthropic_api_key, gemini_api_key
+        """
+        # Determine provider and settings
+        provider = "groq"  # Default
+        model = "llama-3.3-70b-versatile"
+        temperature = 0.7
+        max_tokens = 4096
+        api_key = self._default_groq_key
+        
+        if user_settings:
+            provider = user_settings.get('llm_provider', provider)
+            model = user_settings.get('llm_model', model)
+            temperature = user_settings.get('temperature', temperature)
+            max_tokens = user_settings.get('max_tokens', max_tokens)
+            
+            # Get appropriate API key
+            if provider == 'openai':
+                api_key = user_settings.get('openai_api_key')
+            elif provider == 'anthropic':
+                api_key = user_settings.get('anthropic_api_key')
+            elif provider == 'gemini':
+                api_key = user_settings.get('gemini_api_key') or self._default_gemini_key
+            elif provider == 'groq':
+                api_key = self._default_groq_key  # Groq uses our key
+        
+        # Validate we have an API key
+        if not api_key and provider != 'groq':
+            logger.warning(f"No API key for provider {provider}, falling back to Groq")
+            provider = 'groq'
+            model = 'llama-3.3-70b-versatile'
+            api_key = self._default_groq_key
+        
+        if not api_key:
+            logger.error("No API key available for any provider")
             return self._fallback_response(query, context_chunks)
         
-        # Build context
+        # Build context and prompt
         context = self._build_context(context_chunks)
-        
-        # Build prompt
         prompt = self._build_prompt(query, context, chat_history)
         
         try:
-            # Run in executor to not block
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                partial(self._generate, prompt)
+                partial(
+                    self._generate,
+                    provider=provider,
+                    model=model,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=api_key
+                )
             )
-            
             return response
             
         except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
+            logger.error(f"LLM generation failed with {provider}/{model}: {e}")
             return self._fallback_response(query, context_chunks)
     
-    def _generate(self, prompt: str) -> str:
-        """Generate response synchronously."""
-        if self.provider == "groq":
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1024
-            )
-            return response.choices[0].message.content
-        elif self.provider == "gemini":
-            response = self._client.generate_content(prompt)
-            return response.text
-        else:
-            return "LLM provider not configured"
+    def _generate(
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        api_key: str
+    ) -> str:
+        """Generate response synchronously for a specific provider."""
+        try:
+            if provider == "groq":
+                return self._generate_groq(model, prompt, temperature, max_tokens, api_key)
+            elif provider == "openai":
+                return self._generate_openai(model, prompt, temperature, max_tokens, api_key)
+            elif provider == "anthropic":
+                return self._generate_anthropic(model, prompt, temperature, max_tokens, api_key)
+            elif provider == "gemini":
+                return self._generate_gemini(model, prompt, temperature, max_tokens, api_key)
+            else:
+                logger.error(f"Unknown provider: {provider}")
+                return "LLM provider not supported"
+        except Exception as e:
+            logger.error(f"Generation error with {provider}: {e}")
+            raise
+    
+    def _generate_groq(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Groq (Llama/Mixtral models)."""
+        from groq import Groq
+        
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content
+    
+    def _generate_openai(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with OpenAI (GPT models)."""
+        from openai import OpenAI
+        
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content
+    
+    def _generate_anthropic(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Anthropic (Claude models)."""
+        import anthropic
+        
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+    
+    def _generate_gemini(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Google Gemini."""
+        import google.generativeai as genai
+        
+        genai.configure(api_key=api_key)
+        gen_model = genai.GenerativeModel(model)
+        
+        generation_config = genai.types.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens
+        )
+        
+        response = gen_model.generate_content(prompt, generation_config=generation_config)
+        return response.text
     
     def _build_context(self, chunks: List[Dict[str, Any]]) -> str:
         """Build context string from chunks."""
@@ -123,7 +209,7 @@ CRITICAL FORMATTING RULES (MUST FOLLOW):
 RESPONSE GUIDELINES:
 1. Answer based ONLY on the provided context
 2. If no relevant info found, say "I couldn't find information about that in the provided documents."
-3. Be concise - get to the point quickly, genetate short responses but contains required information.
+3. Be concise - get to the point quickly, generate short responses but contains required information.
 4. Synthesize information naturally
 5. Use a professional, helpful tone"""
 
@@ -131,7 +217,7 @@ RESPONSE GUIDELINES:
         
         if chat_history:
             prompt_parts.append("\n## Previous Conversation:")
-            for msg in chat_history[-5:]:  # Last 5 messages
+            for msg in chat_history[-5:]:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 prompt_parts.append(f"{role}: {msg['content']}")
         
@@ -165,10 +251,11 @@ RESPONSE GUIDELINES:
         
         return "\n".join(response_parts)
     
-    def get_model_name(self) -> str:
+    def get_model_name(self, user_settings: Optional[Dict[str, Any]] = None) -> str:
         """Get the current model name."""
-        self._initialize()
-        return self._model or "unknown"
+        if user_settings:
+            return user_settings.get('llm_model', 'llama-3.3-70b-versatile')
+        return "llama-3.3-70b-versatile"
 
 
 # Singleton instance

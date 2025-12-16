@@ -3,14 +3,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, List, AsyncGenerator
+from sqlalchemy import select
+from typing import Optional, List, AsyncGenerator, Dict, Any
 import json
 import asyncio
 import time
+import logging
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
+from app.models.user_settings import UserSettings
 from app.services.chat_service import chat_service
 from app.services.milvus_service import milvus_service
 from app.services.llm_service import llm_service
@@ -18,6 +21,28 @@ from app.services.query_service import build_sources
 from app.core.config import settings
 
 router = APIRouter(prefix="/stream", tags=["streaming"])
+logger = logging.getLogger(__name__)
+
+
+async def get_user_settings_dict(db: AsyncSession, user_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch user settings from database and convert to dict for LLM service."""
+    result = await db.execute(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    )
+    user_settings = result.scalar_one_or_none()
+    
+    if not user_settings:
+        return None  # Use defaults
+    
+    return {
+        'llm_provider': user_settings.llm_provider,
+        'llm_model': user_settings.llm_model,
+        'temperature': user_settings.temperature,
+        'max_tokens': user_settings.max_tokens,
+        'openai_api_key': user_settings.openai_api_key,
+        'anthropic_api_key': user_settings.anthropic_api_key,
+        'gemini_api_key': user_settings.gemini_api_key,
+    }
 
 
 async def generate_stream(
@@ -45,6 +70,9 @@ async def generate_stream(
     
     start_time = time.time()
     
+    # Fetch user settings (only if they have saved settings)
+    user_settings = await get_user_settings_dict(db, user_id)
+    
     # Search for relevant chunks
     search_results = await milvus_service.search(
         query=message,
@@ -61,14 +89,13 @@ async def generate_stream(
     # Get chat context
     context = await chat_service.get_session_context(db, session_id, user_id, max_messages=10)
     
-    # Generate response (streaming from LLM if supported)
+    # Generate response with user settings
     try:
-        # For now, we'll simulate streaming by chunking the response
-        # In production, you'd integrate with LLM streaming APIs
         full_response = await llm_service.generate_response(
             query=message,
             context_chunks=search_results,
-            chat_history=context[:-1] if len(context) > 1 else None
+            chat_history=context[:-1] if len(context) > 1 else None,
+            user_settings=user_settings  # Pass user settings
         )
         
         # Simulate streaming by sending in chunks
@@ -93,14 +120,15 @@ async def generate_stream(
             content=full_response.strip(),
             sources=sources,
             generation_time_ms=generation_time,
-            model_used=llm_service.get_model_name()
+            model_used=llm_service.get_model_name(user_settings)
         )
         
         # Send completion with message ID and sources
         yield f"data: {json.dumps({'type': 'complete', 'message_id': ai_message.id, 'sources': sources, 'generation_time_ms': generation_time})}\n\n"
         
     except Exception as e:
-        error_msg = f"Error generating response: {str(e)}"
+        logger.error(f"LLM generation error: {e}")
+        error_msg = "I encountered an error generating a response. Please try again."
         
         # Save error message
         ai_message = await chat_service.add_message(
