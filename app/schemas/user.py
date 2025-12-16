@@ -39,6 +39,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_verified: bool
     avatar_url: Optional[str] = None
+    auth_provider: str = "local"
     created_at: datetime
     
     class Config:
@@ -64,3 +65,8 @@ class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8, max_length=100)
     confirm_password: str = Field(..., min_length=8, max_length=100)
+
+
+class GoogleAuth(BaseModel):
+    """Schema for Google OAuth login."""
+    id_token: str

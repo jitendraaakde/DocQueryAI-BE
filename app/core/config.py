@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     # Email verification toggle (set to False to skip email verification during registration)
     EMAIL_VERIFICATION_REQUIRED: bool = False  # Set to True when you have a verified domain
     
+    # Firebase (for Google OAuth)
+    FIREBASE_API_KEY: Optional[str] = None
+    
     class Config:
         env_file = "../.env"  # .env is in project root, not backend folder
         case_sensitive = True
