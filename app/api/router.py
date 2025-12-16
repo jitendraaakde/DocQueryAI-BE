@@ -13,6 +13,7 @@ from app.api.streaming import router as streaming_router
 from app.api.analytics import router as analytics_router
 from app.api.templates import router as templates_router
 from app.api.otp import router as otp_router
+from app.api.url_upload import router as url_upload_router
 
 api_router = APIRouter()
 
@@ -28,3 +29,5 @@ api_router.include_router(streaming_router)
 api_router.include_router(analytics_router)
 api_router.include_router(templates_router)
 api_router.include_router(otp_router)
+api_router.include_router(url_upload_router)
+
