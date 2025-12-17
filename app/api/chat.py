@@ -167,6 +167,8 @@ async def send_message(
     # Query with context
     start_time = time.time()
     
+    suggested_questions = []
+    
     try:
         # Use existing query service with chat context
         query_result = await query_service.query_documents(
@@ -179,16 +181,28 @@ async def send_message(
         
         generation_time = int((time.time() - start_time) * 1000)
         
+        ai_response_content = query_result.get("response", "I couldn't find relevant information.")
+        
         # Add AI response
         ai_message = await chat_service.add_message(
             db=db,
             session_id=session_id,
             role="assistant",
-            content=query_result.get("response", "I couldn't find relevant information."),
+            content=ai_response_content,
             sources=query_result.get("sources", []),
             generation_time_ms=generation_time,
             model_used=query_result.get("model", "unknown"),
         )
+        
+        # Generate suggested follow-up questions (non-blocking fallback)
+        try:
+            suggested_questions = await chat_service.generate_suggested_questions(
+                user_query=request.message,
+                ai_response=ai_response_content,
+                max_questions=3
+            )
+        except Exception:
+            suggested_questions = []
         
     except Exception as e:
         # Add error message
@@ -202,7 +216,11 @@ async def send_message(
     # Refresh session
     session = await chat_service.get_session(db, session_id, current_user.id)
     
-    return SessionQueryResponse(message=ai_message, session=session)
+    return SessionQueryResponse(
+        message=ai_message, 
+        session=session,
+        suggested_questions=suggested_questions
+    )
 
 
 @router.post("/messages/{message_id}/feedback", response_model=ChatMessageResponse)

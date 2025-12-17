@@ -103,6 +103,7 @@ class SessionQueryResponse(BaseModel):
     """Response for session query."""
     message: ChatMessageResponse
     session: ChatSessionResponse
+    suggested_questions: Optional[List[str]] = []  # AI-generated follow-up questions
 
 
 # Export schemas

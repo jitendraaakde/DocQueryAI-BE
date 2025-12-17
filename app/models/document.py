@@ -45,6 +45,7 @@ class Document(Base):
     summary_brief = Column(Text, nullable=True)
     summary_detailed = Column(Text, nullable=True)
     key_points = Column(Text, nullable=True)  # JSON list
+    action_items = Column(Text, nullable=True)  # JSON list of extracted action items
     
     # Processing status
     status = Column(Enum(DocumentStatus), default=DocumentStatus.PENDING)

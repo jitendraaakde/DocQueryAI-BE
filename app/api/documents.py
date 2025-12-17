@@ -12,7 +12,10 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentListResponse,
     DocumentDetailResponse,
-    DocumentUpdate
+    DocumentUpdate,
+    DocumentSummaryResponse,
+    ActionItemsResponse,
+    ActionItem
 )
 from app.services.document_service import DocumentService
 
@@ -200,4 +203,164 @@ async def download_document(
             "Content-Disposition": f"inline; filename=\"{document.original_filename}\"",
             "Access-Control-Expose-Headers": "Content-Disposition"
         }
+    )
+
+
+@router.get("/{document_id}/summary", response_model=DocumentSummaryResponse)
+async def get_document_summary(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get AI-generated summary for a document."""
+    import json
+    
+    document_service = DocumentService(db)
+    document = await document_service.get_document(document_id, user_id)
+    
+    # Parse key_points from JSON string if present
+    key_points = None
+    if document.key_points:
+        try:
+            key_points = json.loads(document.key_points) if document.key_points.startswith('[') else eval(document.key_points)
+        except:
+            key_points = [document.key_points] if document.key_points else None
+    
+    return DocumentSummaryResponse(
+        id=document.id,
+        original_filename=document.original_filename,
+        summary_brief=document.summary_brief,
+        summary_detailed=document.summary_detailed,
+        key_points=key_points,
+        word_count=document.word_count,
+        reading_time_minutes=document.reading_time_minutes,
+        complexity_score=document.complexity_score
+    )
+
+
+@router.post("/{document_id}/summary/regenerate", response_model=DocumentSummaryResponse)
+async def regenerate_document_summary(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Regenerate AI summary for a document."""
+    import json
+    from app.services.summarization_service import summarization_service
+    
+    document_service = DocumentService(db)
+    document = await document_service.get_document(document_id, user_id)
+    
+    if document.status != DocumentStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document must be processed before generating summary"
+        )
+    
+    # Regenerate summary
+    success = await summarization_service.summarize_document(db, document_id, user_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate summary"
+        )
+    
+    # Refresh document
+    await db.refresh(document)
+    
+    # Parse key_points
+    key_points = None
+    if document.key_points:
+        try:
+            key_points = json.loads(document.key_points) if document.key_points.startswith('[') else eval(document.key_points)
+        except:
+            key_points = [document.key_points] if document.key_points else None
+    
+    return DocumentSummaryResponse(
+        id=document.id,
+        original_filename=document.original_filename,
+        summary_brief=document.summary_brief,
+        summary_detailed=document.summary_detailed,
+        key_points=key_points,
+        word_count=document.word_count,
+        reading_time_minutes=document.reading_time_minutes,
+        complexity_score=document.complexity_score
+    )
+
+
+@router.get("/{document_id}/action-items", response_model=ActionItemsResponse)
+async def get_document_action_items(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get extracted action items for a document."""
+    import json
+    
+    document_service = DocumentService(db)
+    document = await document_service.get_document(document_id, user_id)
+    
+    # Parse action_items from JSON string if present
+    items = []
+    if document.action_items:
+        try:
+            raw_items = json.loads(document.action_items)
+            items = [ActionItem(**item) for item in raw_items]
+        except:
+            pass
+    
+    return ActionItemsResponse(
+        id=document.id,
+        original_filename=document.original_filename,
+        action_items=items,
+        total_items=len(items)
+    )
+
+
+@router.post("/{document_id}/action-items/extract", response_model=ActionItemsResponse)
+async def extract_document_action_items(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Extract action items from a document using AI."""
+    import json
+    from app.services.action_item_service import action_item_service
+    
+    document_service = DocumentService(db)
+    document = await document_service.get_document(document_id, user_id)
+    
+    if document.status != DocumentStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document must be processed before extracting action items"
+        )
+    
+    # Extract action items
+    success = await action_item_service.extract_and_store_action_items(db, document_id, user_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to extract action items"
+        )
+    
+    # Refresh document
+    await db.refresh(document)
+    
+    # Parse action_items
+    items = []
+    if document.action_items:
+        try:
+            raw_items = json.loads(document.action_items)
+            items = [ActionItem(**item) for item in raw_items]
+        except:
+            pass
+    
+    return ActionItemsResponse(
+        id=document.id,
+        original_filename=document.original_filename,
+        action_items=items,
+        total_items=len(items)
     )

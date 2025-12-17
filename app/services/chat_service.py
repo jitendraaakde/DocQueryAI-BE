@@ -263,7 +263,63 @@ class ChatService:
             {"role": msg.role, "content": msg.content}
             for msg in messages
         ]
+    
+    async def generate_suggested_questions(
+        self,
+        user_query: str,
+        ai_response: str,
+        max_questions: int = 3
+    ) -> List[str]:
+        """Generate suggested follow-up questions based on the conversation.
+        
+        Args:
+            user_query: The original user question
+            ai_response: The AI's response
+            max_questions: Maximum number of suggestions to generate
+            
+        Returns:
+            List of suggested follow-up questions
+        """
+        from app.services.llm_service import llm_service
+        
+        try:
+            prompt = f"""Based on this conversation, suggest {max_questions} natural follow-up questions the user might want to ask.
+
+User asked: {user_query[:500]}
+
+AI responded: {ai_response[:1000]}
+
+Generate {max_questions} short, specific follow-up questions. Format as a simple numbered list:
+1. 
+2. 
+3.
+
+Questions only, no other text:"""
+
+            response = await llm_service.generate_response(
+                query=prompt,
+                context_chunks=[{"content": ai_response[:1500], "document_name": "Response"}]
+            )
+            
+            # Parse the response for questions
+            suggestions = []
+            lines = response.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and (line[0].isdigit() or line.startswith('-')):
+                    # Clean up the line
+                    question = line.lstrip('0123456789.-) ').strip()
+                    if question and len(question) > 10 and '?' in question:
+                        suggestions.append(question)
+            
+            return suggestions[:max_questions]
+            
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to generate suggested questions: {e}")
+            return []
 
 
 # Singleton instance
 chat_service = ChatService()
+

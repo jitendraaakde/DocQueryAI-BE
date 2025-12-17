@@ -39,6 +39,10 @@ class DocumentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     processed_at: Optional[datetime] = None
+    # Summary fields
+    summary_brief: Optional[str] = None
+    word_count: Optional[int] = None
+    reading_time_minutes: Optional[int] = None
     
     class Config:
         from_attributes = True
@@ -61,7 +65,38 @@ class DocumentDetailResponse(DocumentResponse):
         from_attributes = True
 
 
+class DocumentSummaryResponse(BaseModel):
+    """Schema for document summary response."""
+    id: int
+    original_filename: str
+    summary_brief: Optional[str] = None
+    summary_detailed: Optional[str] = None
+    key_points: Optional[List[str]] = None
+    word_count: Optional[int] = None
+    reading_time_minutes: Optional[int] = None
+    complexity_score: Optional[float] = None
+    
+    class Config:
+        from_attributes = True
+
+
 class DocumentUpdate(BaseModel):
     """Schema for document update."""
     title: Optional[str] = None
     description: Optional[str] = None
+
+
+class ActionItem(BaseModel):
+    """Schema for a single action item."""
+    task: str
+    priority: str = "medium"  # high/medium/low
+    deadline: Optional[str] = None
+    category: str = "task"  # task/decision/commitment/follow-up
+
+
+class ActionItemsResponse(BaseModel):
+    """Schema for action items response."""
+    id: int
+    original_filename: str
+    action_items: List[ActionItem] = []
+    total_items: int = 0

@@ -16,6 +16,7 @@ from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.schemas.document import DocumentCreate, DocumentUpdate, DocumentListResponse, DocumentResponse
 from app.services.milvus_service import milvus_service
 from app.services.storage_service import storage_service
+from app.services.summarization_service import summarization_service
 from app.core.config import settings
 from app.utils.text_extractor import extract_text_from_bytes
 from app.utils.text_chunker import chunk_text
@@ -178,6 +179,18 @@ class DocumentService:
             
             await self.db.flush()
             logger.info(f"Document {document.id} processed successfully with {len(chunks)} chunks")
+            
+            # Generate AI summaries in background (non-blocking)
+            try:
+                await summarization_service.summarize_document(
+                    db=self.db,
+                    document_id=document.id,
+                    user_id=document.user_id
+                )
+                logger.info(f"Document {document.id} summarized successfully")
+            except Exception as summary_error:
+                # Log but don't fail document processing if summarization fails
+                logger.warning(f"Failed to generate summary for document {document.id}: {summary_error}")
             
         except Exception as e:
             logger.error(f"Failed to process document {document.id}: {e}")
