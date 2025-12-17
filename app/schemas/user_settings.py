@@ -8,11 +8,64 @@ from datetime import datetime
 # Available models for each provider (text-only)
 LLM_MODELS = {
     "groq": [
-        {"value": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B Versatile"},
-        {"value": "llama-3.1-8b-instant", "label": "Llama 3.1 8B Instant"},
-        {"value": "mixtral-8x7b-32768", "label": "Mixtral 8x7B"},
-        {"value": "gemma2-9b-it", "label": "Gemma 2 9B"},
-    ],
+  {
+    "value": "llama-3.3-70b-versatile",
+    "label": "Llama 3.3 70B Versatile (Recommended)"
+  },
+  {
+    "value": "llama-3.1-8b-instant",
+    "label": "Llama 3.1 8B Instant"
+  },
+  {
+    "value": "allam-2-7b",
+    "label": "Allam 2 7B"
+  },
+  {
+    "value": "mixtral-8x7b-32768",
+    "label": "Mixtral 8x7B (32K Context)"
+  },
+  {
+    "value": "gemma2-9b-it",
+    "label": "Gemma 2 9B Instruction Tuned"
+  },
+  {
+    "value": "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "label": "LLaMA 4 Maverick 17B Instruct"
+  },
+  {
+    "value": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "label": "LLaMA 4 Scout 17B Instruct"
+  },
+  {
+    "value": "qwen/qwen3-32b",
+    "label": "Qwen 3 32B"
+  },
+  {
+    "value": "moonshotai/kimi-k2-instruct",
+    "label": "Kimi K2 Instruct"
+  },
+  {
+    "value": "moonshotai/kimi-k2-instruct-0905",
+    "label": "Kimi K2 Instruct (0905)"
+  },
+  {
+    "value": "openai/gpt-oss-120b",
+    "label": "GPT-OSS 120B"
+  },
+  {
+    "value": "openai/gpt-oss-20b",
+    "label": "GPT-OSS 20B"
+  },
+  {
+    "value": "groq/compound",
+    "label": "Groq Compound"
+  },
+  {
+    "value": "groq/compound-mini",
+    "label": "Groq Compound Mini"
+  }
+]
+,
     "openai": [
         {"value": "gpt-4o", "label": "GPT-4o"},
         {"value": "gpt-4o-mini", "label": "GPT-4o Mini"},
