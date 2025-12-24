@@ -30,7 +30,12 @@ class DocumentService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.upload_dir = Path(settings.UPLOAD_DIR)
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        # Only try to create directory if filesystem is writable (not on serverless)
+        try:
+            self.upload_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Ignore on read-only filesystems (Vercel, etc.)
+            pass
     
     async def upload_document(
         self,
