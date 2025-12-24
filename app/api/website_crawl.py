@@ -32,7 +32,7 @@ def extract_text_from_html(html: str) -> str:
     """Extract readable text from HTML content."""
     from bs4 import BeautifulSoup
     
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'html.parser')
     
     # Remove unwanted elements
     for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 
@@ -75,7 +75,7 @@ def get_page_title(html: str, url: str) -> str:
     """Extract page title from HTML or generate from URL."""
     from bs4 import BeautifulSoup
     
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'html.parser')
     
     # Try title tag
     title_tag = soup.find('title')

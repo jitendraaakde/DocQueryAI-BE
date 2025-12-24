@@ -115,10 +115,8 @@ async def upload_avatar(
     db: AsyncSession = Depends(get_db)
 ):
     """Upload user avatar image to Supabase S3."""
-    import boto3
-    from botocore.config import Config
     import uuid
-    from app.core.config import settings
+    from app.services.storage_service import storage_service
     
     # Validate file type
     allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
@@ -137,32 +135,16 @@ async def upload_avatar(
         )
     
     try:
-        # Initialize S3 client for Supabase
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=settings.SUPABASE_S3_ENDPOINT,
-            aws_access_key_id=settings.SUPABASE_S3_ACCESS_KEY,
-            aws_secret_access_key=settings.SUPABASE_S3_SECRET_KEY,
-            region_name=settings.SUPABASE_S3_REGION,
-            config=Config(signature_version='s3v4')
-        )
-        
         # Generate unique filename
         file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
         unique_filename = f"avatars/{user_id}/{uuid.uuid4()}.{file_extension}"
         
-        # Upload to Supabase S3
-        s3_client.put_object(
-            Bucket=settings.SUPABASE_BUCKET,
-            Key=unique_filename,
-            Body=content,
-            ContentType=file.content_type
+        # Upload using storage service
+        avatar_url = await storage_service.upload_file(
+            content=content,
+            path=unique_filename,
+            content_type=file.content_type
         )
-        
-        # Generate public URL
-        # Supabase uses a specific URL format for public files
-        base_url = settings.SUPABASE_S3_ENDPOINT.replace('/storage/v1/s3', '')
-        avatar_url = f"{base_url}/storage/v1/object/public/{settings.SUPABASE_BUCKET}/{unique_filename}"
         
         # Update user avatar_url in database
         user_service = UserService(db)
@@ -187,3 +169,4 @@ async def upload_avatar(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload avatar: {str(e)}"
         )
+

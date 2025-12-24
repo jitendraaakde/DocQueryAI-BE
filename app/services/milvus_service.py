@@ -1,8 +1,9 @@
-"""Milvus/Zilliz Cloud service for vector database operations."""
+"""Milvus/Zilliz Cloud service using REST API for vector database operations."""
 
-from pymilvus import MilvusClient, DataType
+import httpx
 from typing import List, Dict, Any, Optional
 import logging
+import json
 
 from app.core.config import settings
 
@@ -10,18 +11,19 @@ logger = logging.getLogger(__name__)
 
 
 class MilvusService:
-    """Service for Milvus/Zilliz Cloud vector database operations."""
+    """Service for Zilliz Cloud vector database operations using REST API."""
     
     COLLECTION_NAME = "DocQueryChunks"
     VECTOR_DIM = 1024  # jina-embeddings-v3 dimension
     
     def __init__(self):
-        self.client: Optional[MilvusClient] = None
+        self._base_url: Optional[str] = None
+        self._token: Optional[str] = None
         self._connected = False
     
     async def connect(self):
-        """Connect to Zilliz Cloud."""
-        if self._connected and self.client:
+        """Initialize connection settings for Zilliz Cloud."""
+        if self._connected:
             return
         
         try:
@@ -31,12 +33,14 @@ class MilvusService:
                     "Set ZILLIZ_CLOUD_URI and ZILLIZ_CLOUD_TOKEN in .env"
                 )
             
-            logger.info(f"Connecting to Zilliz Cloud at {settings.ZILLIZ_CLOUD_URI}")
+            # Extract base URL from URI (remove any trailing paths)
+            uri = settings.ZILLIZ_CLOUD_URI
+            if uri.endswith('/'):
+                uri = uri[:-1]
+            self._base_url = uri
+            self._token = settings.ZILLIZ_CLOUD_TOKEN
             
-            self.client = MilvusClient(
-                uri=settings.ZILLIZ_CLOUD_URI,
-                token=settings.ZILLIZ_CLOUD_TOKEN
-            )
+            logger.info(f"Connecting to Zilliz Cloud at {self._base_url}")
             
             self._connected = True
             logger.info("Connected to Zilliz Cloud successfully")
@@ -50,91 +54,128 @@ class MilvusService:
     
     async def disconnect(self):
         """Disconnect from Zilliz Cloud."""
-        if self.client:
-            self.client.close()
-            self._connected = False
-            logger.info("Disconnected from Zilliz Cloud")
+        self._connected = False
+        logger.info("Disconnected from Zilliz Cloud")
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for API requests."""
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+    
+    async def _make_request(
+        self, 
+        method: str, 
+        endpoint: str, 
+        data: Optional[Dict] = None,
+        timeout: float = 60.0
+    ) -> Dict[str, Any]:
+        """Make HTTP request to Zilliz Cloud REST API."""
+        url = f"{self._base_url}/v2/vectordb{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if method == "POST":
+                response = await client.post(url, headers=self._get_headers(), json=data)
+            elif method == "GET":
+                response = await client.get(url, headers=self._get_headers())
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+            
+            result = response.json()
+            
+            if response.status_code != 200:
+                logger.error(f"Zilliz API error: {result}")
+                raise Exception(f"Zilliz API error: {result.get('message', 'Unknown error')}")
+            
+            # Check for API-level errors
+            if result.get("code") != 0 and result.get("code") is not None:
+                error_msg = result.get("message", "Unknown error")
+                # Ignore "collection already exists" errors
+                if "already exist" not in error_msg.lower():
+                    logger.error(f"Zilliz API error: {error_msg}")
+                    raise Exception(f"Zilliz API error: {error_msg}")
+            
+            return result
     
     async def _ensure_collection(self):
         """Ensure the document chunks collection exists."""
         try:
-            if not self.client.has_collection(self.COLLECTION_NAME):
-                # Create schema
-                schema = MilvusClient.create_schema(
-                    auto_id=True,
-                    enable_dynamic_field=False,
-                )
-                
-                # Add fields
-                schema.add_field(
-                    field_name="id",
-                    datatype=DataType.INT64,
-                    is_primary=True,
-                    auto_id=True
-                )
-                schema.add_field(
-                    field_name="content",
-                    datatype=DataType.VARCHAR,
-                    max_length=65535,
-                    description="The text content of the chunk"
-                )
-                schema.add_field(
-                    field_name="document_id",
-                    datatype=DataType.INT64,
-                    description="Reference to the document in PostgreSQL"
-                )
-                schema.add_field(
-                    field_name="user_id",
-                    datatype=DataType.INT64,
-                    description="Reference to the user who owns the document"
-                )
-                schema.add_field(
-                    field_name="chunk_index",
-                    datatype=DataType.INT64,
-                    description="Index of the chunk within the document"
-                )
-                schema.add_field(
-                    field_name="document_name",
-                    datatype=DataType.VARCHAR,
-                    max_length=1024,
-                    description="Name of the source document"
-                )
-                schema.add_field(
-                    field_name="page_number",
-                    datatype=DataType.INT64,
-                    description="Page number if applicable"
-                )
-                schema.add_field(
-                    field_name="vector",
-                    datatype=DataType.FLOAT_VECTOR,
-                    dim=self.VECTOR_DIM,
-                    description="Jina embedding vector"
-                )
-                
-                # Prepare index parameters
-                index_params = self.client.prepare_index_params()
-                
-                # Add index for vector field
-                index_params.add_index(
-                    field_name="vector",
-                    index_type="AUTOINDEX",
-                    metric_type="COSINE"
-                )
-                
-                # Add indexes for filter fields
-                index_params.add_index(field_name="document_id")
-                index_params.add_index(field_name="user_id")
-                
-                # Create collection
-                self.client.create_collection(
-                    collection_name=self.COLLECTION_NAME,
-                    schema=schema,
-                    index_params=index_params
-                )
-                
-                logger.info(f"Created collection: {self.COLLECTION_NAME}")
-            else:
+            # Check if collection exists
+            result = await self._make_request(
+                "POST",
+                "/collections/has",
+                {"collectionName": self.COLLECTION_NAME}
+            )
+            
+            if result.get("data", {}).get("has", False):
                 logger.info(f"Collection {self.COLLECTION_NAME} already exists")
+                return
+            
+            # Create collection with schema
+            schema = {
+                "autoId": True,
+                "enableDynamicField": False,
+                "fields": [
+                    {
+                        "fieldName": "id",
+                        "dataType": "Int64",
+                        "isPrimary": True,
+                        "autoId": True
+                    },
+                    {
+                        "fieldName": "content",
+                        "dataType": "VarChar",
+                        "elementTypeParams": {"max_length": "65535"}
+                    },
+                    {
+                        "fieldName": "document_id",
+                        "dataType": "Int64"
+                    },
+                    {
+                        "fieldName": "user_id",
+                        "dataType": "Int64"
+                    },
+                    {
+                        "fieldName": "chunk_index",
+                        "dataType": "Int64"
+                    },
+                    {
+                        "fieldName": "document_name",
+                        "dataType": "VarChar",
+                        "elementTypeParams": {"max_length": "1024"}
+                    },
+                    {
+                        "fieldName": "page_number",
+                        "dataType": "Int64"
+                    },
+                    {
+                        "fieldName": "vector",
+                        "dataType": "FloatVector",
+                        "elementTypeParams": {"dim": str(self.VECTOR_DIM)}
+                    }
+                ]
+            }
+            
+            # Create collection
+            await self._make_request(
+                "POST",
+                "/collections/create",
+                {
+                    "collectionName": self.COLLECTION_NAME,
+                    "schema": schema,
+                    "indexParams": [
+                        {
+                            "fieldName": "vector",
+                            "indexType": "AUTOINDEX",
+                            "metricType": "COSINE"
+                        }
+                    ]
+                }
+            )
+            
+            logger.info(f"Created collection: {self.COLLECTION_NAME}")
                 
         except Exception as e:
             logger.error(f"Failed to ensure collection: {e}")
@@ -175,43 +216,33 @@ class MilvusService:
                 # Ensure embedding is a plain list of floats
                 vector = [float(x) for x in embeddings[i]]
                 
-                # Explicitly cast all values to correct types
-                content_val = str(chunk["content"])[:65535]
-                doc_id_val = int(document_id)
-                user_id_val = int(user_id)
-                chunk_idx_val = int(chunk.get("chunk_index", i))
-                doc_name_val = str(document_name)[:1024]
-                page_num_val = int(chunk.get("page_number") or 0)  # Handle None
-                
                 row = {
-                    "content": content_val,
-                    "document_id": doc_id_val,
-                    "user_id": user_id_val,
-                    "chunk_index": chunk_idx_val,
-                    "document_name": doc_name_val,
-                    "page_number": page_num_val,
+                    "content": str(chunk["content"])[:65535],
+                    "document_id": int(document_id),
+                    "user_id": int(user_id),
+                    "chunk_index": int(chunk.get("chunk_index", i)),
+                    "document_name": str(document_name)[:1024],
+                    "page_number": int(chunk.get("page_number") or 0),
                     "vector": vector
                 }
                 data.append(row)
             
-            # Debug: Log first row's field types
-            if data:
-                logger.info(f"[Step 5b] First row field types:")
-                for key, val in data[0].items():
-                    if key == "vector":
-                        logger.info(f"  {key}: list[{type(val[0]).__name__}] len={len(val)}")
-                    else:
-                        logger.info(f"  {key}: {type(val).__name__} = {str(val)[:50]}")
-            
-            # Insert data
+            # Insert data via REST API
             logger.info(f"[Step 6] Inserting {len(data)} records into Milvus collection {self.COLLECTION_NAME}")
-            result = self.client.insert(
-                collection_name=self.COLLECTION_NAME,
-                data=data
+            result = await self._make_request(
+                "POST",
+                "/entities/insert",
+                {
+                    "collectionName": self.COLLECTION_NAME,
+                    "data": data
+                },
+                timeout=120.0  # Longer timeout for inserts
             )
             
             # Extract inserted IDs
-            milvus_ids = [str(id) for id in result["ids"]]
+            insert_data = result.get("data", {})
+            inserted_ids = insert_data.get("insertIds", [])
+            milvus_ids = [str(id) for id in inserted_ids]
             
             logger.info(f"Added {len(chunks)} chunks for document {document_id}")
             return milvus_ids
@@ -246,30 +277,34 @@ class MilvusService:
                 doc_ids_str = ", ".join(str(d) for d in document_ids)
                 filter_expr += f" and document_id in [{doc_ids_str}]"
             
-            # Perform search
-            results = self.client.search(
-                collection_name=self.COLLECTION_NAME,
-                data=[query_vector],
-                filter=filter_expr,
-                limit=limit,
-                output_fields=["content", "document_id", "document_name", "chunk_index", "page_number"]
+            # Perform search via REST API
+            result = await self._make_request(
+                "POST",
+                "/entities/search",
+                {
+                    "collectionName": self.COLLECTION_NAME,
+                    "data": [query_vector],
+                    "filter": filter_expr,
+                    "limit": limit,
+                    "outputFields": ["content", "document_id", "document_name", "chunk_index", "page_number"]
+                }
             )
             
             # Format results
             formatted_results = []
-            if results and len(results) > 0:
-                for hit in results[0]:
-                    entity = hit.get("entity", {})
-                    formatted_results.append({
-                        "milvus_id": str(hit.get("id", "")),
-                        "content": entity.get("content", ""),
-                        "document_id": entity.get("document_id"),
-                        "document_name": entity.get("document_name", ""),
-                        "chunk_index": entity.get("chunk_index", 0),
-                        "page_number": entity.get("page_number", 0),
-                        "score": 1 - hit.get("distance", 0),  # Convert distance to similarity
-                        "distance": hit.get("distance", 0)
-                    })
+            search_data = result.get("data", [])
+            
+            for hit in search_data:
+                formatted_results.append({
+                    "milvus_id": str(hit.get("id", "")),
+                    "content": hit.get("content", ""),
+                    "document_id": hit.get("document_id"),
+                    "document_name": hit.get("document_name", ""),
+                    "chunk_index": hit.get("chunk_index", 0),
+                    "page_number": hit.get("page_number", 0),
+                    "score": 1 - hit.get("distance", 0),  # Convert distance to similarity
+                    "distance": hit.get("distance", 0)
+                })
             
             logger.info(f"Found {len(formatted_results)} results for query: {query[:50]}...")
             return formatted_results
@@ -285,9 +320,13 @@ class MilvusService:
         
         try:
             # Delete entities by filter
-            self.client.delete(
-                collection_name=self.COLLECTION_NAME,
-                filter=f"document_id == {document_id}"
+            await self._make_request(
+                "POST",
+                "/entities/delete",
+                {
+                    "collectionName": self.COLLECTION_NAME,
+                    "filter": f"document_id == {document_id}"
+                }
             )
             
             logger.info(f"Deleted chunks for document {document_id}")
@@ -302,7 +341,12 @@ class MilvusService:
                 await self.connect()
             
             # Check if collection exists as health indicator
-            return self.client.has_collection(self.COLLECTION_NAME)
+            result = await self._make_request(
+                "POST",
+                "/collections/has",
+                {"collectionName": self.COLLECTION_NAME}
+            )
+            return result.get("data", {}).get("has", False)
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
@@ -313,10 +357,12 @@ class MilvusService:
             await self.connect()
         
         try:
-            if self.client.has_collection(self.COLLECTION_NAME):
-                desc = self.client.describe_collection(self.COLLECTION_NAME)
-                return {"collection": self.COLLECTION_NAME, "description": desc}
-            return {"error": "Collection not found"}
+            result = await self._make_request(
+                "POST",
+                "/collections/describe",
+                {"collectionName": self.COLLECTION_NAME}
+            )
+            return {"collection": self.COLLECTION_NAME, "description": result.get("data", {})}
         except Exception as e:
             logger.error(f"Failed to get schema: {e}")
             return {"error": str(e)}
@@ -327,9 +373,20 @@ class MilvusService:
             await self.connect()
         
         try:
-            # Delete the existing collection if it exists
-            if self.client.has_collection(self.COLLECTION_NAME):
-                self.client.drop_collection(self.COLLECTION_NAME)
+            # Check if collection exists
+            result = await self._make_request(
+                "POST",
+                "/collections/has",
+                {"collectionName": self.COLLECTION_NAME}
+            )
+            
+            if result.get("data", {}).get("has", False):
+                # Drop the existing collection
+                await self._make_request(
+                    "POST",
+                    "/collections/drop",
+                    {"collectionName": self.COLLECTION_NAME}
+                )
                 logger.info(f"Dropped collection: {self.COLLECTION_NAME}")
             
             # Recreate the collection

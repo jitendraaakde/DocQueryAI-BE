@@ -1,29 +1,136 @@
-"""Storage service for Supabase S3-compatible bucket operations."""
+"""Storage service for Supabase S3-compatible bucket operations using direct HTTP calls."""
 
 import logging
 import tempfile
 import os
 from typing import Optional
+from datetime import datetime, timezone
+import hashlib
+import hmac
+from urllib.parse import quote, urlencode
 import httpx
-import boto3
-from botocore.config import Config as BotoConfig
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
+class AWSV4Signer:
+    """AWS Signature Version 4 signer for S3-compatible APIs."""
+    
+    def __init__(self, access_key: str, secret_key: str, region: str, service: str = 's3'):
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.region = region
+        self.service = service
+    
+    def _sign(self, key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+    
+    def _get_signature_key(self, date_stamp: str) -> bytes:
+        k_date = self._sign(('AWS4' + self.secret_key).encode('utf-8'), date_stamp)
+        k_region = self._sign(k_date, self.region)
+        k_service = self._sign(k_region, self.service)
+        k_signing = self._sign(k_service, 'aws4_request')
+        return k_signing
+    
+    def get_headers(
+        self, 
+        method: str, 
+        url: str, 
+        headers: dict, 
+        payload: bytes = b''
+    ) -> dict:
+        """Generate signed headers for an AWS V4 request."""
+        from urllib.parse import urlparse
+        
+        parsed = urlparse(url)
+        host = parsed.netloc
+        canonical_uri = quote(parsed.path, safe='/')
+        canonical_querystring = parsed.query if parsed.query else ''
+        
+        # Create timestamps
+        t = datetime.now(timezone.utc)
+        amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+        date_stamp = t.strftime('%Y%m%d')
+        
+        # Calculate payload hash
+        payload_hash = hashlib.sha256(payload).hexdigest()
+        
+        # Build headers dict
+        signed_headers = {
+            'host': host,
+            'x-amz-content-sha256': payload_hash,
+            'x-amz-date': amz_date,
+        }
+        
+        # Add content-type if present
+        if 'Content-Type' in headers:
+            signed_headers['content-type'] = headers['Content-Type']
+        
+        # Create canonical headers string
+        canonical_headers = ''
+        for key in sorted(signed_headers.keys()):
+            canonical_headers += f'{key}:{signed_headers[key]}\n'
+        
+        signed_headers_str = ';'.join(sorted(signed_headers.keys()))
+        
+        # Create canonical request
+        canonical_request = '\n'.join([
+            method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers_str,
+            payload_hash
+        ])
+        
+        # Create string to sign
+        algorithm = 'AWS4-HMAC-SHA256'
+        credential_scope = f'{date_stamp}/{self.region}/{self.service}/aws4_request'
+        string_to_sign = '\n'.join([
+            algorithm,
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
+        ])
+        
+        # Calculate signature
+        signing_key = self._get_signature_key(date_stamp)
+        signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        # Create authorization header
+        authorization_header = (
+            f'{algorithm} Credential={self.access_key}/{credential_scope}, '
+            f'SignedHeaders={signed_headers_str}, Signature={signature}'
+        )
+        
+        # Build final headers
+        result_headers = {
+            'Host': host,
+            'X-Amz-Date': amz_date,
+            'X-Amz-Content-SHA256': payload_hash,
+            'Authorization': authorization_header
+        }
+        
+        if 'Content-Type' in headers:
+            result_headers['Content-Type'] = headers['Content-Type']
+        
+        return result_headers
+
+
 class StorageService:
-    """Service for Supabase S3-compatible Storage operations."""
+    """Service for Supabase S3-compatible Storage operations using direct HTTP."""
     
     def __init__(self):
-        self._client = None
+        self._signer: Optional[AWSV4Signer] = None
         self._bucket_name = settings.SUPABASE_BUCKET
+        self._endpoint = settings.SUPABASE_S3_ENDPOINT
     
     @property
-    def client(self):
-        """Lazy initialization of S3 client."""
-        if self._client is None:
+    def signer(self) -> AWSV4Signer:
+        """Lazy initialization of AWS V4 signer."""
+        if self._signer is None:
             if not settings.SUPABASE_S3_ACCESS_KEY or not settings.SUPABASE_S3_SECRET_KEY:
                 raise ValueError(
                     "Supabase S3 credentials not configured. "
@@ -36,17 +143,18 @@ class StorageService:
                     "Set SUPABASE_S3_ENDPOINT in .env"
                 )
             
-            self._client = boto3.client(
-                's3',
-                endpoint_url=settings.SUPABASE_S3_ENDPOINT,
-                aws_access_key_id=settings.SUPABASE_S3_ACCESS_KEY,
-                aws_secret_access_key=settings.SUPABASE_S3_SECRET_KEY,
-                region_name=settings.SUPABASE_S3_REGION,
-                config=BotoConfig(signature_version='s3v4')
+            self._signer = AWSV4Signer(
+                access_key=settings.SUPABASE_S3_ACCESS_KEY,
+                secret_key=settings.SUPABASE_S3_SECRET_KEY,
+                region=settings.SUPABASE_S3_REGION or 'us-east-1'
             )
-            logger.info("S3-compatible client initialized for Supabase Storage")
+            logger.info("S3-compatible signer initialized for Supabase Storage")
         
-        return self._client
+        return self._signer
+    
+    def _get_object_url(self, path: str) -> str:
+        """Get the S3 API URL for an object."""
+        return f"{self._endpoint}/{self._bucket_name}/{path}"
     
     def _get_public_url(self, path: str) -> str:
         """
@@ -83,17 +191,19 @@ class StorageService:
             Public URL of the uploaded file
         """
         try:
-            extra_args = {}
+            url = self._get_object_url(path)
+            
+            headers = {}
             if content_type:
-                extra_args['ContentType'] = content_type
+                headers['Content-Type'] = content_type
+            
+            # Get signed headers
+            signed_headers = self.signer.get_headers('PUT', url, headers, content)
             
             # Upload to S3-compatible storage
-            self.client.put_object(
-                Bucket=self._bucket_name,
-                Key=path,
-                Body=content,
-                **extra_args
-            )
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.put(url, headers=signed_headers, content=content)
+                response.raise_for_status()
             
             logger.info(f"File uploaded to Supabase Storage: {path}")
             
@@ -130,12 +240,14 @@ class StorageService:
                     response.raise_for_status()
                     return response.content
             else:
-                # Download using S3 client
-                response = self.client.get_object(
-                    Bucket=self._bucket_name,
-                    Key=path
-                )
-                return response['Body'].read()
+                # Download using signed request
+                url = self._get_object_url(path)
+                signed_headers = self.signer.get_headers('GET', url, {})
+                
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.get(url, headers=signed_headers)
+                    response.raise_for_status()
+                    return response.content
                 
         except Exception as e:
             logger.error(f"Failed to download file from Supabase: {e}")
@@ -186,10 +298,13 @@ class StorageService:
                     logger.warning(f"Could not extract path from URL: {path}")
                     return False
             
-            self.client.delete_object(
-                Bucket=self._bucket_name,
-                Key=path
-            )
+            url = self._get_object_url(path)
+            signed_headers = self.signer.get_headers('DELETE', url, {})
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.delete(url, headers=signed_headers)
+                response.raise_for_status()
+            
             logger.info(f"File deleted from Supabase: {path}")
             return True
             

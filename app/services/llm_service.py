@@ -1,9 +1,8 @@
-"""LLM service for generating responses with multi-provider support."""
+"""LLM service for generating responses with multi-provider support using direct API calls."""
 
 import logging
-import asyncio
-from functools import partial
 from typing import List, Dict, Any, Optional
+import httpx
 
 from app.core.config import settings
 
@@ -11,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for LLM-based response generation supporting multiple providers."""
+    """Service for LLM-based response generation supporting multiple providers via REST APIs."""
     
     def __init__(self):
         # Default to env config
@@ -78,18 +77,13 @@ class LLMService:
         prompt = self._build_prompt(query, context, chat_history)
         
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                partial(
-                    self._generate,
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    api_key=api_key
-                )
+            response = await self._generate_async(
+                provider=provider,
+                model=model,
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=api_key
             )
             return response
             
@@ -97,7 +91,7 @@ class LLMService:
             logger.error(f"LLM generation failed with {provider}/{model}: {e}")
             return self._fallback_response(query, context_chunks)
     
-    def _generate(
+    async def _generate_async(
         self,
         provider: str,
         model: str,
@@ -106,16 +100,16 @@ class LLMService:
         max_tokens: int,
         api_key: str
     ) -> str:
-        """Generate response synchronously for a specific provider."""
+        """Generate response asynchronously for a specific provider."""
         try:
             if provider == "groq":
-                return self._generate_groq(model, prompt, temperature, max_tokens, api_key)
+                return await self._generate_groq(model, prompt, temperature, max_tokens, api_key)
             elif provider == "openai":
-                return self._generate_openai(model, prompt, temperature, max_tokens, api_key)
+                return await self._generate_openai(model, prompt, temperature, max_tokens, api_key)
             elif provider == "anthropic":
-                return self._generate_anthropic(model, prompt, temperature, max_tokens, api_key)
+                return await self._generate_anthropic(model, prompt, temperature, max_tokens, api_key)
             elif provider == "gemini":
-                return self._generate_gemini(model, prompt, temperature, max_tokens, api_key)
+                return await self._generate_gemini(model, prompt, temperature, max_tokens, api_key)
             else:
                 logger.error(f"Unknown provider: {provider}")
                 return "LLM provider not supported"
@@ -123,58 +117,104 @@ class LLMService:
             logger.error(f"Generation error with {provider}: {e}")
             raise
     
-    def _generate_groq(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
-        """Generate with Groq (Llama/Mixtral models)."""
-        from groq import Groq
+    async def _generate_groq(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Groq (Llama/Mixtral models) using REST API."""
+        url = "https://api.groq.com/openai/v1/chat/completions"
         
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
     
-    def _generate_openai(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
-        """Generate with OpenAI (GPT models)."""
-        from openai import OpenAI
+    async def _generate_openai(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with OpenAI (GPT models) using REST API."""
+        url = "https://api.openai.com/v1/chat/completions"
         
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
     
-    def _generate_anthropic(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
-        """Generate with Anthropic (Claude models)."""
-        import anthropic
+    async def _generate_anthropic(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Anthropic (Claude models) using REST API."""
+        url = "https://api.anthropic.com/v1/messages"
         
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data["content"][0]["text"]
     
-    def _generate_gemini(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
-        """Generate with Google Gemini."""
-        import google.generativeai as genai
+    async def _generate_gemini(self, model: str, prompt: str, temperature: float, max_tokens: int, api_key: str) -> str:
+        """Generate with Google Gemini using REST API."""
+        # Use the model name or default to gemini-pro
+        model_name = model if model.startswith("gemini") else "gemini-pro"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         
-        genai.configure(api_key=api_key)
-        gen_model = genai.GenerativeModel(model)
+        headers = {
+            "Content-Type": "application/json"
+        }
         
-        generation_config = genai.types.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens
-        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens
+            }
+        }
         
-        response = gen_model.generate_content(prompt, generation_config=generation_config)
-        return response.text
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract text from response
+            candidates = data.get("candidates", [])
+            if candidates:
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
+                if parts:
+                    return parts[0].get("text", "")
+            
+            return "No response generated"
     
     def _build_context(self, chunks: List[Dict[str, Any]]) -> str:
         """Build context string from chunks."""

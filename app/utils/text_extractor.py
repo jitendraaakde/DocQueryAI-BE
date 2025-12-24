@@ -15,6 +15,20 @@ def is_url(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
 
+def sanitize_text(text: str) -> str:
+    """
+    Sanitize text for database storage.
+    Removes null bytes and other problematic characters that PostgreSQL can't store.
+    """
+    if not text:
+        return text
+    # Remove null bytes (0x00) which PostgreSQL can't store in UTF8
+    text = text.replace('\x00', '')
+    # Also remove other control characters except newlines, tabs, and carriage returns
+    text = ''.join(char for char in text if char in '\n\r\t' or (ord(char) >= 32 or char == '\n'))
+    return text
+
+
 async def extract_text_from_bytes(content: bytes, file_type: str) -> str:
     """
     Extract text content directly from file bytes.
@@ -117,6 +131,8 @@ async def extract_from_pdf(file_path: str) -> str:
                     text_parts.append(f"[Page {page_num + 1}]\n{page_text}")
         
         full_text = "\n\n".join(text_parts)
+        # Sanitize text to remove null bytes and other problematic characters
+        full_text = sanitize_text(full_text)
         logger.info(f"Extracted {len(full_text)} characters from PDF: {file_path}")
         return full_text
         
