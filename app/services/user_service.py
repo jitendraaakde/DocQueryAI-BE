@@ -68,9 +68,36 @@ class UserService:
         user = await self.get_user_by_email(email)
         if not user:
             return None
+        if not user.hashed_password:
+            return None  # User registered via OAuth only
         if not verify_password(password, user.hashed_password):
             return None
         return user
+    
+    async def check_user_auth_method(self, email: str) -> dict:
+        """Check if a user exists and their authentication method.
+        
+        Returns a dict with:
+        - exists: bool - whether the user exists
+        - auth_provider: str - 'local', 'google', etc.
+        - has_password: bool - whether the user has a password set
+        - is_verified: bool - whether email is verified
+        """
+        user = await self.get_user_by_email(email)
+        if not user:
+            return {
+                "exists": False,
+                "auth_provider": None,
+                "has_password": False,
+                "is_verified": False
+            }
+        
+        return {
+            "exists": True,
+            "auth_provider": user.auth_provider or "local",
+            "has_password": bool(user.hashed_password),
+            "is_verified": user.is_verified
+        }
     
     async def get_user_by_email(self, email: str) -> Optional[User]:
         """Get a user by email."""

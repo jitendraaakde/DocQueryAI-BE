@@ -44,6 +44,42 @@ async def login(
 ):
     """Login and get access tokens."""
     user_service = UserService(db)
+    
+    # First check if user exists and their auth method
+    auth_check = await user_service.check_user_auth_method(credentials.email)
+    
+    if not auth_check["exists"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error_code": "AUTH_EMAIL_NOT_FOUND",
+                "message": "No account found with this email address. Would you like to create one?"
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if user registered with Google
+    if auth_check["auth_provider"] == "google" and not auth_check["has_password"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error_code": "AUTH_GOOGLE_ONLY",
+                "message": "This account was created with Google. Please click 'Continue with Google' to log in."
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if email is verified (if verification is required)
+    if settings.EMAIL_VERIFICATION_REQUIRED and not auth_check["is_verified"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error_code": "AUTH_EMAIL_NOT_VERIFIED",
+                "message": "Please verify your email address before logging in. Check your inbox for the verification link."
+            },
+        )
+    
+    # Attempt authentication
     user = await user_service.authenticate_user(
         email=credentials.email,
         password=credentials.password
@@ -52,14 +88,20 @@ async def login(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail={
+                "error_code": "AUTH_INVALID_PASSWORD",
+                "message": "The password you entered is incorrect. Please try again or reset your password."
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User account is inactive"
+            detail={
+                "error_code": "AUTH_ACCOUNT_INACTIVE",
+                "message": "Your account has been deactivated. Please contact support for assistance."
+            }
         )
     
     tokens = user_service.create_tokens(user)
